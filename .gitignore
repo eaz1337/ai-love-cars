@@ -1,0 +1,11 @@
+# Virtual environment
+venv/
+
+# SQLite database files
+samochody.db
+samochody.db-shm
+samochody.db-wal
+
+# Python temporary files
+__pycache__/
+*.pyc
