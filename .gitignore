@@ -2,9 +2,16 @@
 venv/
 
 # SQLite database files
-samochody.db
-samochody.db-shm
-samochody.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Browser profiles used by DrissionPage
+czysty_profil_bidfax/
+drission-profile/
+
+# Secrets
+.env
 
 # Python temporary files
 __pycache__/
