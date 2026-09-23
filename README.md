@@ -8,7 +8,7 @@ The project has four stages. The first two are implemented in this repository, t
 
 1. Collecting final prices from US auctions (Copart, IAAI) via Bidfax. Done.
 2. Collecting listings and price history from Otomoto. Done.
-3. Profitability analysis: comparing auction prices with Polish market prices and picking the most profitable models. Planned.
+3. Profitability analysis: comparing auction prices with a forecast of Polish market prices six months ahead, including a parts price index for repair costs, and picking the most profitable models. Planned.
 4. Valuing current auction lots from the full description and photos, and calculating the maximum bid. Planned.
 
 Japanese auctions will be added as another source alongside Bidfax, using the same data schema, so the analysis works the same way for both import routes.
@@ -75,11 +75,17 @@ A separate scraper for Japanese auctions that writes prices to the database in a
 
 ### Profitability analysis
 
-Comparing the median Otomoto price (PLN) for a given make, model and year with the median final auction price (USD or JPY), after currency conversion and adding import costs: transport, customs duty, excise, VAT, auction fees, repairs and a safety margin. The output is a ranking of models by expected profit and by time to sell derived from listing history. Matching models requires normalizing names, because Bidfax stores the model together with the trim (e.g. `Stelvio Ti Awd`), while Otomoto gives the model alone.
+Comparing the expected resale price in Poland (PLN) for a given make, model and year with the median final auction price (USD or JPY), after currency conversion and adding import costs: transport, customs duty, excise, VAT, auction fees, repairs and a safety margin.
+
+Repair cost is not a flat estimate. It is calculated with a parts price index that tracks how much spare parts cost for a given make and model, so the same damage is priced differently for a Porsche than for a Ford. The data source for the index is still to be decided.
+
+The expected resale price is not today's Otomoto price. Organizing the import and bringing a car back to top condition is expected to take about six months, so the system forecasts what a given make, model and year will be worth in six months. The forecast is based on price history from the Otomoto SCD2 data (price changes and time to sell) and on depreciation by age and mileage, and that forecast is what the auction price is compared against.
+
+The output is a ranking of models by expected profit and by time to sell derived from listing history. Matching models requires normalizing names, because Bidfax stores the model together with the trim (e.g. `Stelvio Ti Awd`), while Otomoto gives the model alone.
 
 ### Valuing current lots
 
-Fetching lots scheduled for today together with their full description and photos. An AI model assesses the extent of damage and estimates repair cost from the description and photos, then compares that with the expected resale price in Poland. The output is a valuation of the car and the maximum amount worth bidding, so that the target margin remains after all costs.
+Fetching lots scheduled for today together with their full description and photos. An AI model assesses the extent of damage from the description and photos and estimates the repair cost using the parts price index, then compares that with the forecast resale price in Poland six months from now. The output is a valuation of the car and the maximum amount worth bidding, so that the target margin remains after all costs.
 
 ## Notes
 
