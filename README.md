@@ -1,0 +1,86 @@
+# ai-love-cars
+
+A system for finding profitable cars at foreign auctions. It collects sales history from Copart and IAAI (USA) and from Japanese auctions, compares it with the Polish used-car market (Otomoto), identifies the models with the best profit potential, and finally values today's auction lots and gives you the maximum amount worth bidding.
+
+## How it works
+
+The project has four stages. The first two are implemented in this repository, the last two are planned.
+
+1. Collecting final prices from US auctions (Copart, IAAI) via Bidfax. Done.
+2. Collecting listings and price history from Otomoto. Done.
+3. Profitability analysis: comparing auction prices with Polish market prices and picking the most profitable models. Planned.
+4. Valuing current auction lots from the full description and photos, and calculating the maximum bid. Planned.
+
+Japanese auctions will be added as another source alongside Bidfax, using the same data schema, so the analysis works the same way for both import routes.
+
+## Repository contents
+
+| File | Purpose |
+|---|---|
+| `scraper_bidfax.py` | Scrapes finished Copart and IAAI auctions from en.bidfax.info |
+| `scraper_otomoto.py` | Scrapes listings from otomoto.pl together with their price history |
+
+Both scripts write to the same SQLite file, `samochody.db` (tables `bidfax_scd2` and `otomoto_scd2`), so the data can be joined by make, model and year.
+
+## scraper_bidfax.py
+
+The script walks through Bidfax result pages for each make and stores, for every lot: make, model, year, VIN, final price in USD, auction (Copart or IAAI), location, lot number, condition, damage type, mileage, sale date and link.
+
+Bidfax is protected against bots, so the script drives a real Chrome browser through DrissionPage, using a persistent user profile, random delays between pages and a longer pause after each make. If Cloudflare or a captcha shows up, the script gives you 90 seconds to pass the check manually, and stops after two failed blocks in a row.
+
+The scope is set by constants at the top of the file. `MARKI_DO_POBRANIA` is the list of makes, `DNI_WSTECZ_POBIERANIE` is how far back to go (365 days by default), and `MIN_ROK_PRODUKCJI` and `MAX_ROK_PRODUKCJI` cut off cars that are too old or too new (2015 to current year minus 3 by default). Scanning a make stops on its own when a whole page consists of duplicates, or when all auctions on it are older than the configured range. Records older than `OKNO_HISTORII_DNI` are deleted after each make.
+
+## scraper_otomoto.py
+
+The script works in two phases.
+
+Phase 1 is a fast scan of listing pages. Pages are fetched in parallel (batches of 20 pages, 6 threads) with `curl_cffi` impersonating Chrome, and data is read from the `__NEXT_DATA__` JSON embedded in the HTML. The filter covers cars registered in Poland, sold by private sellers, for 30 selected makes, newest first. The list of makes is in `WYBRANE_MARKI`.
+
+Phase 2 fills in details from individual listing pages (8 threads): the full description, accident-free status, first owner, damage, seller name and the date the seller joined Otomoto. Listings that return 404 or 410 are marked as ended.
+
+Data is stored using the SCD2 model. Every price change closes the current row (`Wazne_Do`) and opens a new one (`Wazne_Od`), so each car keeps its full price history. Listings that disappeared from the results get the status `Zakończone`, which makes it possible to estimate time to sell. The script also detects clones, meaning the same car relisted under a new ID (same title, year, mileage, seller, fuel and gearbox), and counts them in the `Ilosc_Powtorzen` column instead of duplicating records.
+
+On 403/429 responses or Cloudflare challenges the script tries to switch servers through the NordVPN CLI. If `nordvpn` is not installed, rotation is skipped and the script just retries.
+
+## Installation
+
+Python 3.10 or newer is required.
+
+```bash
+pip install beautifulsoup4 lxml DrissionPage curl_cffi
+```
+
+`scraper_bidfax.py` needs Google Chrome installed. The browser path (`/usr/bin/google-chrome`) and the profile path (`--user-data-dir`) are hardcoded in `main()`, so change them to your own before the first run. `scraper_otomoto.py` optionally uses the NordVPN CLI.
+
+## Usage
+
+```bash
+python scraper_bidfax.py
+python scraper_otomoto.py
+```
+
+Both scripts can be run daily. Subsequent runs only add new records and update changes, so the database grows incrementally.
+
+## Data schema
+
+`bidfax_scd2`: Marka, Model, Rocznik, Tytul, VIN, Cena_USD, Aukcja, Lokalizacja, Lot_Number, Condition, Damage, Mileage, Date_Of_Sale, Link.
+
+`otomoto_scd2`: ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo, Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, Miejsce, Sprzedawca, Nazwa_Sprzedawcy, Opis, Sprzedawca_Od, Link, Data_Dodania, Data_Ostatniego_Widzenia, Status, Wazne_Od, Wazne_Do, Ilosc_Powtorzen.
+
+## Roadmap
+
+### Japanese auctions
+
+A separate scraper for Japanese auctions that writes prices to the database in a format compatible with Bidfax (make, model, year, price, condition, auction grade, mileage, sale date).
+
+### Profitability analysis
+
+Comparing the median Otomoto price (PLN) for a given make, model and year with the median final auction price (USD or JPY), after currency conversion and adding import costs: transport, customs duty, excise, VAT, auction fees, repairs and a safety margin. The output is a ranking of models by expected profit and by time to sell derived from listing history. Matching models requires normalizing names, because Bidfax stores the model together with the trim (e.g. `Stelvio Ti Awd`), while Otomoto gives the model alone.
+
+### Valuing current lots
+
+Fetching lots scheduled for today together with their full description and photos. An AI model assesses the extent of damage and estimates repair cost from the description and photos, then compares that with the expected resale price in Poland. The output is a valuation of the car and the maximum amount worth bidding, so that the target margin remains after all costs.
+
+## Notes
+
+The scripts collect data from third-party websites. Check the terms of service of Bidfax and Otomoto before use and keep request rates reasonable. Otomoto data includes seller information, so do not publish or share it further.

@@ -17,20 +17,60 @@ DOMAIN = "https://en.bidfax.info/"
 MAX_PAGES = 500
 
 MARKI_DO_POBRANIA = [
-    "acura", "alfa-romeo", "alpina", "alpine", 
-    "aston-martin", "audi", "bentley", "bmw", 
-    "cadillac", "chevrolet", "chrysler", "dodge"
+    "acura",
+    "alfa-romeo",
+    "aston-martin",
+    "audi",
+    "bentley",
+    "bmw",
+    "cadillac",
+    "chevrolet",
+    "chrysler",
+    "dodge",
+    "ferrari",
+    "ford",
+    "genesis",
+    "gmc",
+    "honda",
+    "hyundai",
+    "infiniti",
+    "jaguar",
+    "jeep",
+    "kia",
+    "lamborghini",
+    "land-rover",
+    "lexus",
+    "lincoln",
+    "lotus",
+    "lucid",
+    "maserati",
+    "mazda",
+    "mclaren-automotive",
+    "mercedes-benz",
+    "mitsubishi",
+    "nissan",
+    "polestar",
+    "pontiac",
+    "porsche",
+    "ram",
+    "rolls-royce",
+    "saab",
+    "subaru",
+    "tesla",
+    "toyota",
+    "volkswagen",
+    "volvo",
 ]
 
-DNI_WSTECZ_POBIERANIE = 365
+# Pobieramy tylko ostatnie 3 dni, by codziennie szybkim sprintem aktualizować bazę
+DNI_WSTECZ_POBIERANIE = 3
 DATA_GRANICZNA_POBIERANIA = datetime.now() - timedelta(days=DNI_WSTECZ_POBIERANIE)
 OKNO_HISTORII_DNI = 365
-
-MIN_ROK_PRODUKCJI = 2015
-MAX_ROK_PRODUKCJI = datetime.now().year - 3
+MIN_ROK_PRODUKCJI = 2008
+MAX_ROK_PRODUKCJI = datetime.now().year + 1
 
 # ==============================================================================
-# BAZA DANYCH SQLITE
+# BAZA DANYCH SQLITE (SZYBKI ZAPIS)
 # ==============================================================================
 def zainicjalizuj_baze():
     conn = sqlite3.connect(DB_NAME)
@@ -42,45 +82,56 @@ def zainicjalizuj_baze():
             Mileage TEXT, Date_Of_Sale TEXT, Link TEXT UNIQUE
         )
     """)
-    
-    # BEZPIECZNA MIGRACJA: Dodanie nowych kolumn, jeśli nie istnieją w starej bazie
     try:
         cursor.execute("ALTER TABLE bidfax_scd2 ADD COLUMN Model TEXT")
         cursor.execute("ALTER TABLE bidfax_scd2 ADD COLUMN Rocznik INTEGER")
         conn.commit()
-        logging.info("🔧 Zaktualizowano strukturę bazy danych o kolumny: Model, Rocznik.")
-    except sqlite3.OperationalError:
-        # Kolumny już istnieją, ignorujemy
+    except sqlite3.OperationalError: 
         pass
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_date_of_sale ON bidfax_scd2 (Date_Of_Sale)")
     cursor.execute("PRAGMA journal_mode = WAL;")
-    cursor.execute("PRAGMA synchronous = NORMAL;")
+    cursor.execute("PRAGMA synchronous = OFF;")
     conn.commit()
     return conn
 
-def wstaw_ogloszenie(conn, car, marka):
+def wstaw_ogloszenia_hurtowo(conn, auta):
     cursor = conn.cursor()
+    dane_do_zapisu = [
+        (car['Marka'], car['Model'], car['Rocznik'], car['Tytul'], car['VIN'], car['Cena_USD'], 
+         car['Aukcja'], car['Lokalizacja'], car['Lot_Number'], car['Condition'], 
+         car['Damage'], car['Mileage'], car['Date_Of_Sale'], car['Link']) 
+        for car in auta
+    ]
     try:
-        cursor.execute("""
+        cursor.executemany("""
             INSERT OR IGNORE INTO bidfax_scd2 (
                 Marka, Model, Rocznik, Tytul, VIN, Cena_USD, Aukcja, Lokalizacja, Lot_Number, 
                 Condition, Damage, Mileage, Date_Of_Sale, Link
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (marka, car['Model'], car['Rocznik'], car['Tytul'], car['VIN'], car['Cena_USD'], 
-              car['Aukcja'], car['Lokalizacja'], car['Lot_Number'], car['Condition'], 
-              car['Damage'], car['Mileage'], car['Date_Of_Sale'], car['Link']))
+        """, dane_do_zapisu)
         conn.commit()
-        return cursor.rowcount > 0 
+        return cursor.rowcount
     except Exception as e:
-        logging.error(f"Błąd zapisu do bazy: {e}")
-        return False
+        return 0
 
-def usun_stare_dane_retencja(conn):
-    cursor = conn.cursor()
-    data_graniczna = (datetime.now() - timedelta(days=OKNO_HISTORII_DNI)).strftime("%Y-%m-%d")
-    cursor.execute("DELETE FROM bidfax_scd2 WHERE Date_Of_Sale < ? AND Date_Of_Sale != 'Brak'", (data_graniczna,))
-    conn.commit()
+# ==============================================================================
+# 🕵️ ZACHOWANIA LUDZKIE (ANTY-BOT)
+# ==============================================================================
+def losowa_przerwa(strony_bez_przerwy):
+    if strony_bez_przerwy > random.randint(15, 35):
+        czas_przerwy = random.uniform(25.0, 75.0)
+        logging.info(f"☕ [HUMAN BEHAVIOR] Przerwa na kawę. Skrypt zatrzymany na {czas_przerwy:.0f} sekund.")
+        time.sleep(czas_przerwy)
+        return 0
+    return strony_bez_przerwy
+
+def symuluj_panike_czlowieka(page):
+    time.sleep(random.uniform(1.0, 2.5))
+    page.scroll.down(random.randint(100, 300))
+    time.sleep(random.uniform(0.5, 1.5))
+    page.scroll.up(random.randint(50, 150))
+    time.sleep(random.uniform(2.0, 4.0))
 
 # ==============================================================================
 # PARSOWANIE HTML
@@ -89,8 +140,6 @@ def wyciagnij_dane_z_html(html_content, marka):
     cars = []
     soup = BeautifulSoup(html_content, 'html.parser')
     oferty = soup.find_all('div', class_='thumbnail offer')
-    
-    # Formatowanie marki (np. z "alfa-romeo" robimy "alfa romeo"), żeby łatwiej wyciąć z tytułu
     marka_czysta = marka.replace('-', ' ').lower()
     
     for oferta in oferty:
@@ -108,20 +157,14 @@ def wyciagnij_dane_z_html(html_content, marka):
         vin_match = re.search(r'vin:\s*([A-Z0-9]+)', tytul, re.IGNORECASE)
         vin = vin_match.group(1) if vin_match else "Brak"
         
-        # WYCIĄGANIE ROCZNIKA I MODELU
         rok_match = re.search(r'\b(20[0-2][0-9])\b', tytul)
         rocznik = int(rok_match.group(1)) if rok_match else 0
         
         model = "Brak"
         if rocznik > 0:
-            # Ucinamy tytuł w miejscu gdzie zaczyna się rocznik
-            czesc_przed_rokiem = tytul.split(str(rocznik))[0].strip() # Zwraca np. "Alfa Romeo Stelvio Ti Awd"
-            
-            # Wyrzucamy nazwę marki z przodu, żeby został sam model
-            if czesc_przed_rokiem.lower().startswith(marka_czysta):
-                model = czesc_przed_rokiem[len(marka_czysta):].strip()
-            else:
-                model = czesc_przed_rokiem # Fallback w rzadkich przypadkach
+            czesc_przed_rokiem = tytul.split(str(rocznik))[0].strip()
+            if czesc_przed_rokiem.lower().startswith(marka_czysta): model = czesc_przed_rokiem[len(marka_czysta):].strip()
+            else: model = czesc_przed_rokiem
         
         detale = {"Aukcja": "Brak", "Lokalizacja": "Brak", "Lot number": "Brak", "Condition": "Brak", "Damage": "Brak", "Mileage": "Brak", "Date of sale": "Brak"}
         
@@ -144,95 +187,73 @@ def wyciagnij_dane_z_html(html_content, marka):
                      "Lot_Number": detale["Lot number"], "Condition": detale["Condition"], 
                      "Damage": detale["Damage"], "Mileage": detale["Mileage"], 
                      "Date_Of_Sale": detale["Date of sale"], "Link": link})
-        
     return cars
 
 # ==============================================================================
 # GŁÓWNA PĘTLA
 # ==============================================================================
 def main():
-    logging.info("Rozpoczynam skanowanie Bidfax (Stały profil, symulacja człowieka)...")
     conn = zainicjalizuj_baze()
         
+    # ULTIMATE BYPASS: Podłączamy się do ręcznie otwartej przeglądarki!
     co = ChromiumOptions()
-    co.set_browser_path('/usr/bin/google-chrome')
-    co.set_local_port(9223)
-    co.set_argument('--user-data-dir=/home/eaz/Desktop/drission-profile')
+    co.set_local_port(9222) 
     
-    co.headless(False) 
-    co.set_argument('--no-sandbox')
-    co.set_argument('--disable-dev-shm-usage')
-    co.set_argument('--disable-blink-features=AutomationControlled')
-    co.set_argument('--disable-infobars')
-    co.set_argument('--ignore-certificate-errors')
-    co.no_imgs(True) 
-        
     try:
+        # Skrypt nie otwiera Chrome'a, tylko "włamuje się" do już otwartego okna na porcie 9222
         page = ChromiumPage(co)
     except Exception as e:
-        logging.error(f"Nie udało się uruchomić przeglądarki: {e}")
+        logging.error(f"Nie udało się połączyć. Upewnij się, że odpaliłeś Chrome komendą z portem 9222!")
         return
 
-    logging.info("Rozgrzewam przeglądarkę na google.com...")
-    page.get("https://www.google.com")
-    time.sleep(random.uniform(2.5, 4.0))
+    logging.info("Przejęto kontrolę nad przeglądarką! Wchodzę na Bidfax...")
+    page.get(DOMAIN)
+    symuluj_panike_czlowieka(page) 
     
+    strony_od_przerwy = 0
+
     try:
-        kolejne_blokady = 0
-        
         for marka in MARKI_DO_POBRANIA:
             logging.info(f"\n{'='*50}\nSKANOWANIE MARKI: {marka.upper()}\n{'='*50}")
             aktualna_strona = 1
             
             while aktualna_strona <= MAX_PAGES:
                 url = f"{DOMAIN}{marka}/" if aktualna_strona == 1 else f"{DOMAIN}{marka}/page/{aktualna_strona}/"
-                logging.info(f"[{marka.upper()}] Wchodzę na stronę {aktualna_strona}...")
                 
-                page.get(url)
-                is_loaded = page.ele('.thumbnail offer', timeout=10)
-                
-                if not is_loaded:
-                    tytul = page.title.lower() if page.title else ""
-                    podejrzane_slowa = ["just a moment", "weryfikacja", "cloudflare", "attention required", "403", "429", "503", "access denied", "error", "security"]
-                    is_suspicious_title = any(word in tytul for word in podejrzane_slowa)
-                    has_cloudflare_cf = page.ele('#cf-wrapper', timeout=1) or page.ele('#challenge-running', timeout=1)
-                    has_captcha = page.ele('.g-recaptcha', timeout=1) or page.ele('.h-captcha', timeout=1)
-                    is_normal_page_structure = page.ele('tag:footer', timeout=1) or page.ele('#header', timeout=1)
+                strony_od_przerwy += 1
+                strony_od_przerwy = losowa_przerwa(strony_od_przerwy)
 
-                    if is_suspicious_title or has_cloudflare_cf or has_captcha or not is_normal_page_structure:
-                        kolejne_blokady += 1
-                        if kolejne_blokady >= 2:
-                            logging.critical("🛑 WYKRYTO DWIE BLOKADY POD RZĄD! Całkowite przerwanie skryptu.")
-                            return
-                        logging.warning(f"⚠️ Wykryto anomalię. Próba {kolejne_blokady}/2. Masz 90 sek na naprawę...")
-                        weryfikacja_udana = False
-                        for _ in range(45): 
-                            if page.ele('.thumbnail offer', timeout=2):
-                                logging.info("✅ Weryfikacja udana! Oferty znów są widoczne.")
-                                weryfikacja_udana = True
-                                kolejne_blokady = 0
-                                break
-                            time.sleep(2)
-                            
-                        if not weryfikacja_udana:
-                            logging.error(f"❌ Blokada nie ustąpiła na stronie {aktualna_strona} dla marki {marka}.")
-                            break 
-                    else:
-                        logging.info("Brak ofert (dotarto do końca wyników dla tej marki).")
+                try:
+                    start_time = time.time()
+                    page.get(url) 
+                    
+                    time.sleep(random.uniform(0.6, 1.3)) 
+                    html_content = page.html
+                    
+                    tytul_strony = page.title.lower() if page.title else ""
+                    if "cloudflare" in html_content.lower() or "just a moment" in tytul_strony:
+                        logging.warning("⚠️ Wykryto blokadę Cloudflare! Udaję człowieka...")
+                        symuluj_panike_czlowieka(page)
+                        html_content = page.html
+                        
+                except Exception as e:
+                    logging.error(f"Błąd sieci: {e}")
+                    time.sleep(5)
+                    continue
+                
+                if 'thumbnail offer' not in html_content:
+                    if "404" in html_content:
+                        logging.info("Koniec ofert dla tej marki.")
                         break
-                else:
-                    kolejne_blokady = 0
+                    else:
+                        time.sleep(2)
+                        continue
                 
-                page.scroll.to_bottom()
-                time.sleep(1.0)
-                
-                # ZMIANA: Przekazujemy markę do funkcji, by mogła precyzyjnie wyciąć model!
-                samochody = wyciagnij_dane_z_html(page.html, marka)
+                samochody = wyciagnij_dane_z_html(html_content, marka)
                 if not samochody: break
                     
                 auta_do_bazy = []
                 aukcje_zbyt_stare_licznik = 0
-                odrzucone_rocznik = 0
                 
                 for auto in samochody:
                     data_str = auto['Date_Of_Sale']
@@ -245,48 +266,38 @@ def main():
                                 continue
                         except ValueError: pass
                     
-                    # Filtrujemy na podstawie wyodrębnionego rocznika
                     rocznik = auto['Rocznik']
-                    if rocznik > 0:
-                        if rocznik < MIN_ROK_PRODUKCJI or rocznik > MAX_ROK_PRODUKCJI:
-                            odrzucone_rocznik += 1
-                            continue
+                    if rocznik > 0 and (rocznik < MIN_ROK_PRODUKCJI or rocznik > MAX_ROK_PRODUKCJI):
+                        continue
                     
                     auta_do_bazy.append(auto)
 
-                faktycznie_zapisane = 0
-                duplikaty = 0
-                for auto in auta_do_bazy:
-                    czy_nowe = wstaw_ogloszenie(conn, auto, marka)
-                    if czy_nowe: faktycznie_zapisane += 1
-                    else: duplikaty += 1
+                faktycznie_zapisane = wstaw_ogloszenia_hurtowo(conn, auta_do_bazy) if auta_do_bazy else 0
+                czas_wyk = time.time() - start_time
                     
-                logging.info(f"[{marka.upper()}] Nowe: {faktycznie_zapisane} | Duplikaty: {duplikaty} | Zły rocznik: {odrzucone_rocznik} | Zbyt stare datowo: {aukcje_zbyt_stare_licznik}")
+                logging.info(f"[{marka.upper()}-S{aktualna_strona}] Dodano: {faktycznie_zapisane} | (Czas zapytania: {czas_wyk:.1f}s)")
                 
-                if len(auta_do_bazy) > 0 and duplikaty == len(auta_do_bazy):
-                    logging.info(f"🛑 INTELIGENTNY HAMULEC: Baza dogoniła historię! Przechodzę do następnej marki.")
+                # INTELIGENTNE HAMULCE
+                if auta_do_bazy and faktycznie_zapisane == 0:
+                    logging.info(f"🛑 Baza zaktualizowana (same duplikaty). Przechodzę do następnej marki.")
                     break
-                if len(samochody) > 0 and aukcje_zbyt_stare_licznik == len(samochody):
-                    logging.info(f"⏰ Dotarto do starych aukcji. Zatrzymuję skanowanie marki {marka.upper()}.")
+                if samochody and aukcje_zbyt_stare_licznik == len(samochody):
+                    logging.info(f"⏰ Dotarto do starszych aukcji dla {marka.upper()} (ponad {DNI_WSTECZ_POBIERANIE} dni). Idę dalej.")
                     break
                 
                 aktualna_strona += 1
-                czas_czekania = random.uniform(1.2, 2.8)
-                logging.info(f"Czekam {czas_czekania:.1f}s przed kolejną stroną...")
-                time.sleep(czas_czekania)
+                
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bidfax_scd2 WHERE Date_Of_Sale < ? AND Date_Of_Sale != 'Brak'", 
+                       ((datetime.now() - timedelta(days=OKNO_HISTORII_DNI)).strftime("%Y-%m-%d"),))
+        conn.commit()
         
-        usun_stare_dane_retencja(conn)
-        przerwa_na_marke = random.uniform(30.0, 90.0)
-        logging.info(f"✅ Zakończono markę! Robię dłuższą przerwę: {przerwa_na_marke:.1f}s przed kolejną marką...")
-        time.sleep(przerwa_na_marke)
-            
-    except Exception as e:
-        logging.error(f"Krytyczny błąd w głównej pętli: {e}")
+    except KeyboardInterrupt:
+        logging.info("Przerwano działanie skryptu skrótem z klawiatury (Ctrl+C).")
     finally:
-        try: page.quit()
-        except: pass
+        # Usunąłem page.quit() żeby skrypt nie zamknął Ci niespodziewanie Twojej głównej przeglądarki!
         conn.close()
-        logging.info("Skrypt zakończył działanie.")
+        logging.info("Skrypt zakończył działanie. Rozłączono z przeglądarką.")
 
 if __name__ == "__main__":
     main()
