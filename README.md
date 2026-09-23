@@ -90,3 +90,4 @@ Fetching lots scheduled for today together with their full description and photo
 ## Notes
 
 The scripts collect data from third-party websites. Check the terms of service of Bidfax and Otomoto before use and keep request rates reasonable. Otomoto data includes seller information, so do not publish or share it further.
+
