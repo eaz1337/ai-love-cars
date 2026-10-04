@@ -72,7 +72,7 @@ def get_session():
     return thread_local.session
 
 # ==============================================================================
-# BAZA DANYCH SQLITE
+# BAZA DANYCH SQLITE (Dodana flaga: Detale_Pobrane)
 # ==============================================================================
 def zainicjalizuj_baze():
     conn = sqlite3.connect(DB_NAME)
@@ -84,20 +84,23 @@ def zainicjalizuj_baze():
             Cena_PLN REAL, Przebieg_km INTEGER, Paliwo TEXT,
             Rok_produkcji INTEGER, Pojemnosc_cm3 INTEGER, Moc_KM INTEGER,
             Skrzynia_biegow TEXT, Kraj_pochodzenia TEXT, Bezwypadkowy TEXT, Pierwszy_wlasciciel TEXT,
-            Uszkodzony TEXT, Miejsce TEXT, Czas_publikacji TEXT,
+            Uszkodzony TEXT, Miasto TEXT, Wojewodztwo TEXT, Miejsce TEXT, Czas_publikacji TEXT,
             Sprzedawca TEXT, Nazwa_Sprzedawcy TEXT, Link TEXT,
             Data_Dodania TEXT, Data_Ostatniego_Widzenia TEXT,
             Status TEXT, Wazne_Od TEXT, Wazne_Do TEXT,
-            Opis TEXT, Sprzedawca_Od TEXT, Ilosc_Powtorzen INTEGER DEFAULT 1
+            Opis TEXT, Sprzedawca_Od TEXT, Ilosc_Powtorzen INTEGER DEFAULT 1,
+            Is_Outlier INTEGER DEFAULT 0, Detale_Pobrane INTEGER DEFAULT 0
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_aktualne ON otomoto_scd2 (ID_Ogloszenia, Wazne_Do)")
     
-    try: cursor.execute("ALTER TABLE otomoto_scd2 ADD COLUMN Nazwa_Sprzedawcy TEXT DEFAULT 'Brak'")
-    except sqlite3.OperationalError: pass
-
-    try: cursor.execute("ALTER TABLE otomoto_scd2 ADD COLUMN Ilosc_Powtorzen INTEGER DEFAULT 1")
-    except sqlite3.OperationalError: pass
+    for col, col_type in [("Nazwa_Sprzedawcy", "TEXT"), ("Ilosc_Powtorzen", "INTEGER DEFAULT 1"), 
+                          ("Miasto", "TEXT"), ("Wojewodztwo", "TEXT"), 
+                          ("Is_Outlier", "INTEGER DEFAULT 0"), ("Detale_Pobrane", "INTEGER DEFAULT 0")]:
+        try: 
+            cursor.execute(f"ALTER TABLE otomoto_scd2 ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError: 
+            pass
 
     cursor.execute("PRAGMA journal_mode = WAL;")
     cursor.execute("PRAGMA synchronous = NORMAL;")
@@ -122,24 +125,30 @@ def pobierz_indeks_aut(conn):
         
     return mem_db
 
+def normalize_nulls(val):
+    if not val: return None
+    v_str = str(val).strip()
+    if v_str.lower() in ["brak", "nie podano", "null", "none", ""]:
+        return None
+    return v_str
+
 def clean_int(val):
-    if not val or val == "Brak": return None
+    if not val: return None
     v = str(val).replace(' ', '').replace('km', '').replace('cm3', '').replace('KM', '')
+    if v.lower() in ["brak", "niepodano", "none", "null"]: return None
     try: return int(v)
     except ValueError: return None
 
 def clean_float(val):
-    if not val or val == "Brak": return None
+    if not val: return None
     v = str(val).replace(' ', '').replace(',', '.')
+    if v.lower() in ["brak", "niepodano", "none", "null"]: return None
     try: return float(v)
     except ValueError: return None
 
 def bezpeiczny_soup(html_content):
-    """Fallback parsera na wypadek braku lxml w środowisku."""
-    try:
-        return BeautifulSoup(html_content, 'lxml')
-    except bs4.FeatureNotFound:
-        return BeautifulSoup(html_content, 'html.parser')
+    try: return BeautifulSoup(html_content, 'lxml')
+    except bs4.FeatureNotFound: return BeautifulSoup(html_content, 'html.parser')
 
 def parse_otomoto_json(html_content):
     cars = []
@@ -165,7 +174,8 @@ def parse_otomoto_json(html_content):
 
 def wyciagnij_dane_ogloszenia(car):
     seller = car.get("seller")
-    seller_name = seller.get("name", "Osoba prywatna") if isinstance(seller, dict) else "Osoba prywatna"
+    seller_name = normalize_nulls(seller.get("name") if isinstance(seller, dict) else None) or "Osoba prywatna"
+    
     price_node = car.get("price") or {}
     price = clean_float(price_node.get("amount", {}).get("value") or price_node.get("value"))
 
@@ -177,40 +187,54 @@ def wyciagnij_dane_ogloszenia(car):
             if p.get("label"): params[p.get("label").strip().lower()] = val
 
     location_node = car.get("location")
-    if not isinstance(location_node, dict):
-        location_node = car.get("seller", {}).get("location", {})
+    if not isinstance(location_node, dict): location_node = car.get("seller", {}).get("location", {})
 
     city_data = location_node.get("city")
-    city = city_data.get("name", "") if isinstance(city_data, dict) else str(city_data or "")
+    city = city_data.get("name", "").strip() if isinstance(city_data, dict) else str(city_data or "").strip()
+    
     region_data = location_node.get("region") or location_node.get("province")
-    region = region_data.get("name", "") if isinstance(region_data, dict) else str(region_data or "")
+    region = region_data.get("name", "").strip() if isinstance(region_data, dict) else str(region_data or "").strip()
 
-    miejsce = f"{city.strip()} ({region.strip()})" if city and region else (city.strip() or region.strip() or "Brak")
-    pierwszy_wlasciciel = params.get("original_owner") or params.get("first_owner") or params.get("pierwszy właściciel", "Brak")
+    miejsce = f"{city} ({region})" if city and region else (city or region or None)
+
+    przebieg = clean_int(params.get("mileage") or params.get("przebieg"))
+    rok = clean_int(params.get("year") or params.get("rok produkcji"))
+    pojemnosc = clean_int(params.get("engine_capacity") or params.get("pojemność skokowa"))
+    moc = clean_int(params.get("engine_power") or params.get("moc"))
+    
+    is_outlier = 0
+    if price and (price < 1000 or price > 1000000): is_outlier = 1
+    if przebieg and przebieg > 1000000: is_outlier = 1
+    if rok and (rok < 1950 or rok > 2026): is_outlier = 1
+    if pojemnosc and (pojemnosc < 600 or pojemnosc > 8000): is_outlier = 1
+    if moc and (moc < 30 or moc > 1000): is_outlier = 1
 
     return {
         "ID_Ogloszenia": str(car.get("id")),
-        "Marka": params.get("make", "Brak"),
-        "Model": params.get("model", "Brak"),
-        "Tytul": car.get("title", "Brak"),
+        "Marka": normalize_nulls(params.get("make")),
+        "Model": normalize_nulls(params.get("model")),
+        "Tytul": normalize_nulls(car.get("title")),
         "Cena_PLN": price,
-        "Przebieg_km": clean_int(params.get("mileage") or params.get("przebieg")),
-        "Paliwo": params.get("fuel_type") or params.get("rodzaj paliwa") or "Brak",
-        "Rok_produkcji": clean_int(params.get("year") or params.get("rok produkcji")),
-        "Pojemnosc_cm3": clean_int(params.get("engine_capacity") or params.get("pojemność skokowa")),
-        "Moc_KM": clean_int(params.get("engine_power") or params.get("moc")),
-        "Skrzynia_biegow": params.get("gearbox") or params.get("skrzynia biegów", "Brak"),
-        "Kraj_pochodzenia": params.get("country_origin") or params.get("kraj pochodzenia", "Brak"),
-        "Bezwypadkowy": params.get("no_accident") or params.get("bezwypadkowy", "Brak"),
-        "Pierwszy_wlasciciel": pierwszy_wlasciciel,
-        "Uszkodzony": params.get("damaged") or params.get("uszkodzony", "Brak"),
-        "Miejsce": miejsce,
-        "Czas_publikacji": car.get("createdAt", "Brak"),
-        "Sprzedawca": seller_name.strip(),
-        "Nazwa_Sprzedawcy": seller_name.strip(), 
-        "Link": car.get("url", "Brak"),
-        "Opis": "Brak",
-        "Sprzedawca_Od": "Brak"
+        "Przebieg_km": przebieg,
+        "Paliwo": normalize_nulls(params.get("fuel_type") or params.get("rodzaj paliwa")),
+        "Rok_produkcji": rok,
+        "Pojemnosc_cm3": pojemnosc,
+        "Moc_KM": moc,
+        "Skrzynia_biegow": normalize_nulls(params.get("gearbox") or params.get("skrzynia biegów")),
+        "Kraj_pochodzenia": normalize_nulls(params.get("country_origin") or params.get("kraj pochodzenia")),
+        "Bezwypadkowy": normalize_nulls(params.get("no_accident") or params.get("bezwypadkowy")),
+        "Pierwszy_wlasciciel": normalize_nulls(params.get("original_owner") or params.get("first_owner") or params.get("pierwszy właściciel")),
+        "Uszkodzony": normalize_nulls(params.get("damaged") or params.get("uszkodzony")),
+        "Miasto": normalize_nulls(city),
+        "Wojewodztwo": normalize_nulls(region),
+        "Miejsce": normalize_nulls(miejsce),
+        "Czas_publikacji": normalize_nulls(car.get("createdAt")),
+        "Sprzedawca": normalize_nulls(seller_name),
+        "Nazwa_Sprzedawcy": normalize_nulls(seller_name), 
+        "Link": normalize_nulls(car.get("url")),
+        "Opis": None,
+        "Sprzedawca_Od": None,
+        "Is_Outlier": is_outlier
     }
 
 def rotuj_nordvpn_system():
@@ -221,7 +245,7 @@ def rotuj_nordvpn_system():
             try:
                 subprocess.run(["nordvpn", "connect", "Poland"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except FileNotFoundError:
-                logging.error("System: Aplikacja 'nordvpn' nie jest zainstalowana na tym systemie. Pomijam zmianę IP.")
+                logging.error("System: Aplikacja 'nordvpn' nie jest zainstalowana. Pomijam zmianę IP.")
             time.sleep(6)
             logging.info("System: Nowy serwer NordVPN przypisany. Wznawiam ruch.")
             
@@ -259,18 +283,19 @@ def wstaw_nowy_rekord(cursor, car):
         INSERT INTO otomoto_scd2 (
             ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
             Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
-            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, Miejsce,
-            Czas_publikacji, Sprzedawca, Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
-            Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
+            Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
+            Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
+            Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, Detale_Pobrane
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     """, (
-        car["ID_Ogloszenia"], car["Marka"], car["Model"], car["Tytul"], car["Cena_PLN"],
-        car["Przebieg_km"], car["Paliwo"], car["Rok_produkcji"], car["Pojemnosc_cm3"], car["Moc_KM"],
-        car["Skrzynia_biegow"], car["Kraj_pochodzenia"],
-        car["Bezwypadkowy"], car["Pierwszy_wlasciciel"], car["Uszkodzony"], car["Miejsce"],
-        car["Czas_publikacji"], car["Sprzedawca"], car.get("Nazwa_Sprzedawcy", "Brak"), car["Link"], car["Data_Dodania"],
-        car["Data_Ostatniego_Widzenia"], car["Status"], car["Wazne_Od"], car["Wazne_Do"],
-        car.get("Opis", "Brak"), car.get("Sprzedawca_Od", "Brak"), car.get("Ilosc_Powtorzen", 1)
+        car.get("ID_Ogloszenia"), car.get("Marka"), car.get("Model"), car.get("Tytul"), car.get("Cena_PLN"),
+        car.get("Przebieg_km"), car.get("Paliwo"), car.get("Rok_produkcji"), car.get("Pojemnosc_cm3"), car.get("Moc_KM"),
+        car.get("Skrzynia_biegow"), car.get("Kraj_pochodzenia"), car.get("Bezwypadkowy"), car.get("Pierwszy_wlasciciel"), 
+        car.get("Uszkodzony"), car.get("Miasto"), car.get("Wojewodztwo"), car.get("Miejsce"),
+        car.get("Czas_publikacji"), car.get("Sprzedawca"), car.get("Nazwa_Sprzedawcy"), car.get("Link"), car.get("Data_Dodania"),
+        car.get("Data_Ostatniego_Widzenia"), car.get("Status"), car.get("Wazne_Od"), car.get("Wazne_Do"),
+        car.get("Opis"), car.get("Sprzedawca_Od"), car.get("Ilosc_Powtorzen", 1), car.get("Is_Outlier", 0)
     ))
 
 def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
@@ -305,9 +330,9 @@ def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
             else:
                 cursor.execute("""
                     UPDATE otomoto_scd2
-                    SET Data_Ostatniego_Widzenia = ?, Miejsce = ?
+                    SET Data_Ostatniego_Widzenia = ?, Miejsce = ?, Miasto = ?, Wojewodztwo = ?
                     WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
-                """, (dzisiaj, car["Miejsce"], car_id, NIESKONCZONOSC))
+                """, (dzisiaj, car["Miejsce"], car["Miasto"], car["Wojewodztwo"], car_id, NIESKONCZONOSC))
 
         else:
             stare_id = mem_db["klony"].get(key)
@@ -316,9 +341,7 @@ def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
                     UPDATE otomoto_scd2
                     SET Data_Ostatniego_Widzenia = ?,
                         Ilosc_Powtorzen = Ilosc_Powtorzen + 1,
-                        ID_Ogloszenia = ?,
-                        Link = ?,
-                        Cena_PLN = ?
+                        ID_Ogloszenia = ?, Link = ?, Cena_PLN = ?
                     WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
                 """, (dzisiaj, car_id, car["Link"], car["Cena_PLN"], stare_id, NIESKONCZONOSC))
                 
@@ -373,7 +396,7 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
                 page_num, cars_on_page = future.result()
                 if cars_on_page is None: continue
                 if not cars_on_page:
-                    logging.info(f"Strona {page_num} jest pusta (koniec ogłoszeń na liście).")
+                    logging.info(f"Strona {page_num} jest pusta.")
                     koniec_wynikow = True
                     continue
 
@@ -396,16 +419,18 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
         INSERT INTO otomoto_scd2 (
             ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
             Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
-            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, Miejsce,
-            Czas_publikacji, Sprzedawca, Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
-            Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen
+            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
+            Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
+            Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
+            Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, Detale_Pobrane
         )
         SELECT 
             ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
             Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
-            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, Miejsce,
-            Czas_publikacji, Sprzedawca, Nazwa_Sprzedawcy, Link, Data_Dodania, ?,
-            'Zakończone', ?, ?, Opis, Sprzedawca_Od, Ilosc_Powtorzen
+            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
+            Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
+            Nazwa_Sprzedawcy, Link, Data_Dodania, ?,
+            'Zakończone', ?, ?, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, 1
         FROM otomoto_scd2
         WHERE Data_Ostatniego_Widzenia != ? AND Wazne_Do = ? AND Status = 'Aktywne'
     """, (dzisiaj, dzisiaj, NIESKONCZONOSC, dzisiaj, NIESKONCZONOSC))
@@ -538,19 +563,20 @@ def faza_2_uzupelnij_detale(conn):
     
     while True:
         cursor = conn.cursor()
+        # KLUCZOWA ZMIANA: Zamiast szukać NULLi w nieskończoność, skrypt bierze tylko te auta, których jeszcze nie sprawdził (Detale_Pobrane = 0)
         cursor.execute("""
             SELECT ID_Ogloszenia, Link, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, Opis, Sprzedawca_Od, Nazwa_Sprzedawcy
             FROM otomoto_scd2 
             WHERE Status = 'Aktywne' 
             AND Wazne_Do = ?
-            AND (Bezwypadkowy = 'Brak' OR Pierwszy_wlasciciel = 'Brak' OR Uszkodzony = 'Brak' OR Opis = 'Brak' OR Sprzedawca_Od = 'Brak' OR Nazwa_Sprzedawcy = 'Brak') 
-            AND Link != 'Brak'
+            AND Detale_Pobrane = 0
+            AND Link IS NOT NULL
             LIMIT ?
         """, (NIESKONCZONOSC, LIMIT_FAZY_2))
         
         do_poprawy = cursor.fetchall()
         if not do_poprawy:
-            logging.info("[FAZA 2] Wszystkie aktywne ogłoszenia mają już pobrany pełny opis i specyfikację!")
+            logging.info("[FAZA 2] Wszystkie aktywne ogłoszenia mają pobrane detale! (Koniec pracy).")
             break
 
         logging.info(f"\n[FAZA 2] Rozpoczynam wielowątkowe skanowanie paczki {len(do_poprawy)} aut (Wątki: {MAX_WORKERS_FAZA_2})...")
@@ -569,43 +595,44 @@ def faza_2_uzupelnij_detale(conn):
                 if detale == "WYGASLO":
                     cursor.execute("""
                         UPDATE otomoto_scd2
-                        SET Status = 'Zakończone', Wazne_Do = ?
+                        SET Status = 'Zakończone', Wazne_Do = ?, Detale_Pobrane = 1
                         WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
                     """, (dzisiaj, car_id, NIESKONCZONOSC))
                     wygasle += 1
                 
                 elif detale is not None:
-                    nowy_b = detale.get("bezwypadkowy")
-                    nowy_p = detale.get("pierwszy_wlasciciel")
-                    nowy_u = detale.get("uszkodzony")
-                    nowy_o = detale.get("opis")
-                    nowy_s = detale.get("sprzedawca_od")
-                    nowy_ns = detale.get("nazwa_sprzedawcy")
+                    nowy_b = normalize_nulls(detale.get("bezwypadkowy"))
+                    nowy_p = normalize_nulls(detale.get("pierwszy_wlasciciel"))
+                    nowy_u = normalize_nulls(detale.get("uszkodzony"))
+                    nowy_o = normalize_nulls(detale.get("opis"))
+                    nowy_s = normalize_nulls(detale.get("sprzedawca_od"))
+                    nowy_ns = normalize_nulls(detale.get("nazwa_sprzedawcy"))
                     
-                    final_b = nowy_b if nowy_b else (b_db if b_db != 'Brak' else 'Nie podano')
-                    final_p = nowy_p if nowy_p else (p_db if p_db != 'Brak' else 'Nie podano')
-                    final_u = nowy_u if nowy_u else (u_db if u_db != 'Brak' else 'Nie podano')
-                    final_o = nowy_o if nowy_o else (o_db if o_db != 'Brak' else 'Brak opisu')
-                    final_s = nowy_s if nowy_s else (s_db if s_db != 'Brak' else 'Nie podano')
+                    final_b = nowy_b if nowy_b else b_db
+                    final_p = nowy_p if nowy_p else p_db
+                    final_u = nowy_u if nowy_u else u_db
+                    final_o = nowy_o if nowy_o else o_db
+                    final_s = nowy_s if nowy_s else s_db
                     final_ns = nowy_ns if nowy_ns else ns_db
                     
+                    # KLUCZOWA ZMIANA: Zawsze oznaczamy auto jako odwiedzone (Detale_Pobrane = 1)
                     cursor.execute("""
                         UPDATE otomoto_scd2
-                        SET Bezwypadkowy = ?, Pierwszy_wlasciciel = ?, Uszkodzony = ?, Opis = ?, Sprzedawca_Od = ?, Nazwa_Sprzedawcy = ?
+                        SET Bezwypadkowy = ?, Pierwszy_wlasciciel = ?, Uszkodzony = ?, 
+                            Opis = ?, Sprzedawca_Od = ?, Nazwa_Sprzedawcy = ?, Detale_Pobrane = 1
                         WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
                     """, (final_b, final_p, final_u, final_o, final_s, final_ns, car_id, NIESKONCZONOSC))
                     uzupelnione += 1
                 else:
-                    # Zabezpieczenie przed błędem pętli nieskończonej - oznaczamy problematyczne ogłoszenie
                     cursor.execute("""
                         UPDATE otomoto_scd2
-                        SET Opis = 'Błąd pobierania', Nazwa_Sprzedawcy = 'Błąd pobierania'
+                        SET Opis = 'Błąd pobierania', Detale_Pobrane = 1
                         WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
                     """, (car_id, NIESKONCZONOSC))
                     uzupelnione += 1
 
         conn.commit()
-        logging.info(f"[FAZA 2] Paczka zakończona! Zaktualizowano {uzupelnione} aut. Oznaczono jako wygasłe: {wygasle}.")
+        logging.info(f"[FAZA 2] Paczka zakończona! Odwiedzono {uzupelnione} aut. Oznaczono jako wygasłe: {wygasle}.")
         time.sleep(5)
 
 def main():
