@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import random
 import urllib.parse
@@ -55,6 +56,7 @@ ZADANIA_SCRAPOWANIA = [
 DB_NAME = "samochody.db"
 statystyki_blokad = {"ilosc_blokad": 0, "ilosc_rotacji_vpn": 0}
 vpn_lock = threading.Lock()
+stat_lock = threading.Lock()
 thread_local = threading.local()
 
 MAX_WORKERS_FAZA_1 = 6
@@ -65,6 +67,9 @@ MAX_STRON = 4000
 MAX_PROB_NA_STRONE = 3
 LIMIT_FAZY_2 = 500  
 NIESKONCZONOSC = '9999-12-31 23:59:59'
+MAX_PROB_DETALI = 3          # tyle razy faza 2 próbuje pobrać detale ogłoszenia, potem odpuszcza
+MAX_ZAMKNIEC_PROC = 0.30     # bezpiecznik: nie zamykamy naraz więcej niż 30% aktywnych ogłoszeń
+MIN_AKTYWNYCH_DLA_BEZPIECZNIKA = 50
 
 def get_session():
     if not hasattr(thread_local, "session"):
@@ -75,7 +80,7 @@ def get_session():
 # BAZA DANYCH SQLITE (Dodana flaga: Detale_Pobrane)
 # ==============================================================================
 def zainicjalizuj_baze():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS otomoto_scd2 (
@@ -89,18 +94,24 @@ def zainicjalizuj_baze():
             Data_Dodania TEXT, Data_Ostatniego_Widzenia TEXT,
             Status TEXT, Wazne_Od TEXT, Wazne_Do TEXT,
             Opis TEXT, Sprzedawca_Od TEXT, Ilosc_Powtorzen INTEGER DEFAULT 1,
-            Is_Outlier INTEGER DEFAULT 0, Detale_Pobrane INTEGER DEFAULT 0
+            Is_Outlier INTEGER DEFAULT 0, Detale_Pobrane INTEGER DEFAULT 0, Proby_Detali INTEGER DEFAULT 0
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_aktualne ON otomoto_scd2 (ID_Ogloszenia, Wazne_Do)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wazne_status ON otomoto_scd2 (Wazne_Do, Status)")
     
     for col, col_type in [("Nazwa_Sprzedawcy", "TEXT"), ("Ilosc_Powtorzen", "INTEGER DEFAULT 1"), 
                           ("Miasto", "TEXT"), ("Wojewodztwo", "TEXT"), 
-                          ("Is_Outlier", "INTEGER DEFAULT 0"), ("Detale_Pobrane", "INTEGER DEFAULT 0")]:
+                          ("Is_Outlier", "INTEGER DEFAULT 0"), ("Detale_Pobrane", "INTEGER DEFAULT 0"),
+                          ("Proby_Detali", "INTEGER DEFAULT 0")]:
         try: 
             cursor.execute(f"ALTER TABLE otomoto_scd2 ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError: 
             pass
+
+    # Migracja: dawniej nieudane pobranie zapisywało 'Błąd pobierania' w Opis i na stałe blokowało ponowną próbę
+    cursor.execute("UPDATE otomoto_scd2 SET Opis = NULL, Detale_Pobrane = 0 WHERE Opis = 'Błąd pobierania'")
+    conn.commit()  # PRAGMA journal_mode nie działa wewnątrz otwartej transakcji
 
     cursor.execute("PRAGMA journal_mode = WAL;")
     cursor.execute("PRAGMA synchronous = NORMAL;")
@@ -120,8 +131,10 @@ def pobierz_indeks_aut(conn):
     for row in rows:
         (car_id, tytul, rok, przebieg, sprzedawca, paliwo, skrzynia, cena, data_dod, ilosc_powt) = row
         mem_db["ids"][car_id] = {"cena": cena, "data_dodania": data_dod, "ilosc_powtorzen": ilosc_powt if ilosc_powt else 1}
-        key = (tytul, rok, przebieg, sprzedawca, paliwo, skrzynia)
-        mem_db["klony"][key] = car_id
+        key = klucz_klona({"Tytul": tytul, "Rok_produkcji": rok, "Przebieg_km": przebieg, "Sprzedawca": sprzedawca,
+                           "Paliwo": paliwo, "Skrzynia_biegow": skrzynia})
+        if key:
+            mem_db["klony"][key] = car_id
         
     return mem_db
 
@@ -133,15 +146,16 @@ def normalize_nulls(val):
     return v_str
 
 def clean_int(val):
+    """'125 000 km' (także z twardą spacją), '1 998 cm3', '150 KM' -> liczba. Brak cyfr -> None."""
     if not val: return None
-    v = str(val).replace(' ', '').replace('km', '').replace('cm3', '').replace('KM', '')
-    if v.lower() in ["brak", "niepodano", "none", "null"]: return None
-    try: return int(v)
-    except ValueError: return None
+    # Tylko początek tekstu (cyfry i spacje, także twarde); jednostka na końcu, np. "cm3", nie może wejść do liczby
+    liczba = re.match(r'[\d\s\u00a0]+', str(val).strip())
+    cyfry = re.sub(r'\D', '', liczba.group()) if liczba else ''
+    return int(cyfry) if cyfry else None
 
 def clean_float(val):
     if not val: return None
-    v = str(val).replace(' ', '').replace(',', '.')
+    v = str(val).replace('\xa0', '').replace(' ', '').replace(',', '.')
     if v.lower() in ["brak", "niepodano", "none", "null"]: return None
     try: return float(v)
     except ValueError: return None
@@ -177,7 +191,8 @@ def wyciagnij_dane_ogloszenia(car):
     seller_name = normalize_nulls(seller.get("name") if isinstance(seller, dict) else None) or "Osoba prywatna"
     
     price_node = car.get("price") or {}
-    price = clean_float(price_node.get("amount", {}).get("value") or price_node.get("value"))
+    amount_node = price_node.get("amount") or {}
+    price = clean_float(amount_node.get("value") or price_node.get("value"))
 
     params = {}
     for p in car.get("parameters", []):
@@ -187,7 +202,9 @@ def wyciagnij_dane_ogloszenia(car):
             if p.get("label"): params[p.get("label").strip().lower()] = val
 
     location_node = car.get("location")
-    if not isinstance(location_node, dict): location_node = car.get("seller", {}).get("location", {})
+    if not isinstance(location_node, dict):
+        location_node = (seller.get("location") if isinstance(seller, dict) else None) or {}
+    if not isinstance(location_node, dict): location_node = {}
 
     city_data = location_node.get("city")
     city = city_data.get("name", "").strip() if isinstance(city_data, dict) else str(city_data or "").strip()
@@ -205,7 +222,7 @@ def wyciagnij_dane_ogloszenia(car):
     is_outlier = 0
     if price and (price < 1000 or price > 1000000): is_outlier = 1
     if przebieg and przebieg > 1000000: is_outlier = 1
-    if rok and (rok < 1950 or rok > 2026): is_outlier = 1
+    if rok and (rok < 1950 or rok > datetime.now().year + 1): is_outlier = 1
     if pojemnosc and (pojemnosc < 600 or pojemnosc > 8000): is_outlier = 1
     if moc and (moc < 30 or moc > 1000): is_outlier = 1
 
@@ -237,15 +254,25 @@ def wyciagnij_dane_ogloszenia(car):
         "Is_Outlier": is_outlier
     }
 
+def dodaj_blokade():
+    with stat_lock:
+        statystyki_blokad["ilosc_blokad"] += 1
+
 def rotuj_nordvpn_system():
     if vpn_lock.acquire(blocking=False):
         try:
             logging.warning("System: Inicjowanie zmiany serwera NordVPN (CLI)...")
-            statystyki_blokad["ilosc_rotacji_vpn"] += 1
+            with stat_lock:
+                statystyki_blokad["ilosc_rotacji_vpn"] += 1
             try:
-                subprocess.run(["nordvpn", "connect", "Poland"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                wynik = subprocess.run(["nordvpn", "connect", "Poland"], stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, timeout=60)
+                if wynik.returncode != 0:
+                    logging.error(f"System: 'nordvpn connect' zakończyło się kodem {wynik.returncode}. IP mogło się nie zmienić.")
             except FileNotFoundError:
                 logging.error("System: Aplikacja 'nordvpn' nie jest zainstalowana. Pomijam zmianę IP.")
+            except subprocess.TimeoutExpired:
+                logging.error("System: 'nordvpn connect' nie odpowiedziało w 60 s. Idę dalej.")
             time.sleep(6)
             logging.info("System: Nowy serwer NordVPN przypisany. Wznawiam ruch.")
             
@@ -265,13 +292,13 @@ def pobierz_strone_cffi(url, page_num):
                 cars = parse_otomoto_json(response.text)
                 if not cars and "cloudflare" in response.text.lower():
                     logging.warning(f"Strona {page_num}: Zatrzymane przez Cloudflare (Próba {proba}).")
-                    statystyki_blokad["ilosc_blokad"] += 1
+                    dodaj_blokade()
                     rotuj_nordvpn_system()
                 else:
                     return page_num, cars
             elif response.status_code in (403, 429):
                 logging.warning(f"Strona {page_num}: BLOKADA ({response.status_code}) (Próba {proba}).")
-                statystyki_blokad["ilosc_blokad"] += 1
+                dodaj_blokade()
                 rotuj_nordvpn_system()
         except Exception as e:
             logging.debug(f"Cichy błąd HTTP dla strony {page_num}: {e}")
@@ -287,7 +314,7 @@ def wstaw_nowy_rekord(cursor, car):
             Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
             Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
             Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, Detale_Pobrane
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         car.get("ID_Ogloszenia"), car.get("Marka"), car.get("Model"), car.get("Tytul"), car.get("Cena_PLN"),
         car.get("Przebieg_km"), car.get("Paliwo"), car.get("Rok_produkcji"), car.get("Pojemnosc_cm3"), car.get("Moc_KM"),
@@ -295,8 +322,18 @@ def wstaw_nowy_rekord(cursor, car):
         car.get("Uszkodzony"), car.get("Miasto"), car.get("Wojewodztwo"), car.get("Miejsce"),
         car.get("Czas_publikacji"), car.get("Sprzedawca"), car.get("Nazwa_Sprzedawcy"), car.get("Link"), car.get("Data_Dodania"),
         car.get("Data_Ostatniego_Widzenia"), car.get("Status"), car.get("Wazne_Od"), car.get("Wazne_Do"),
-        car.get("Opis"), car.get("Sprzedawca_Od"), car.get("Ilosc_Powtorzen", 1), car.get("Is_Outlier", 0)
+        car.get("Opis"), car.get("Sprzedawca_Od"), car.get("Ilosc_Powtorzen", 1), car.get("Is_Outlier", 0),
+        car.get("Detale_Pobrane", 0)
     ))
+
+POLA_DETALI = ["Bezwypadkowy", "Pierwszy_wlasciciel", "Uszkodzony", "Opis", "Sprzedawca_Od", "Nazwa_Sprzedawcy"]
+
+def klucz_klona(car):
+    """Klucz do wykrywania ponownych wystawień. Bez roku lub przebiegu nie da się wiarygodnie porównać aut
+    (puste wartości zlałyby różne auta w jeden 'klon'), więc zwracamy None."""
+    if car['Rok_produkcji'] is None or car['Przebieg_km'] is None:
+        return None
+    return (car['Tytul'], car['Rok_produkcji'], car['Przebieg_km'], car['Sprzedawca'], car['Paliwo'], car['Skrzynia_biegow'])
 
 def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
     if not paczka: return
@@ -304,13 +341,24 @@ def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
     
     for car in paczka:
         car_id = car["ID_Ogloszenia"]
-        key = (car['Tytul'], car['Rok_produkcji'], car['Przebieg_km'], car['Sprzedawca'], car['Paliwo'], car['Skrzynia_biegow'])
+        key = klucz_klona(car)
 
         if car_id in mem_db["ids"]:
             stara_cena = mem_db["ids"][car_id]["cena"]
             nowa_cena = car["Cena_PLN"]
 
             if nowa_cena is not None and stara_cena is not None and stara_cena != nowa_cena:
+                # Nowy wiersz dziedziczy detale z zamykanego, żeby faza 2 nie pobierała podstrony drugi raz
+                cursor.execute(f"""
+                    SELECT {", ".join(POLA_DETALI)}, Detale_Pobrane FROM otomoto_scd2
+                    WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
+                """, (car_id, NIESKONCZONOSC))
+                stary = cursor.fetchone()
+                if stary:
+                    for pole, wartosc in zip(POLA_DETALI, stary):
+                        car[pole] = car.get(pole) or wartosc
+                    car["Detale_Pobrane"] = stary[-1]
+
                 cursor.execute("""
                     UPDATE otomoto_scd2
                     SET Wazne_Do = ?, Data_Ostatniego_Widzenia = ?
@@ -335,35 +383,29 @@ def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
                 """, (dzisiaj, car["Miejsce"], car["Miasto"], car["Wojewodztwo"], car_id, NIESKONCZONOSC))
 
         else:
-            stare_id = mem_db["klony"].get(key)
+            # Nowe ID. Jeśli to ponowne wystawienie znanego auta (klon), zapisujemy je jako NOWY wiersz, który
+            # dziedziczy Data_Dodania i licznik powtórzeń. Starego wiersza nie ruszamy: jeśli ogłoszenie zniknęło,
+            # zamknie je krok końcowy, a jeśli oba są aktywne, każde ma własną historię (bez przepisywania ID).
+            stare_id = mem_db["klony"].get(key) if key else None
             if stare_id and stare_id in mem_db["ids"]:
-                cursor.execute("""
-                    UPDATE otomoto_scd2
-                    SET Data_Ostatniego_Widzenia = ?,
-                        Ilosc_Powtorzen = Ilosc_Powtorzen + 1,
-                        ID_Ogloszenia = ?, Link = ?, Cena_PLN = ?
-                    WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
-                """, (dzisiaj, car_id, car["Link"], car["Cena_PLN"], stare_id, NIESKONCZONOSC))
-                
-                mem_data = mem_db["ids"].pop(stare_id)
-                mem_data["ilosc_powtorzen"] += 1
-                mem_data["cena"] = car["Cena_PLN"]
-                mem_db["ids"][car_id] = mem_data
-                mem_db["klony"][key] = car_id
+                stare = mem_db["ids"][stare_id]
+                car["Data_Dodania"] = stare["data_dodania"]
+                car["Ilosc_Powtorzen"] = stare["ilosc_powtorzen"] + 1
                 stats["wykryte_klony"] += 1
-                continue
             else:
                 car["Data_Dodania"] = dzisiaj
-                car["Data_Ostatniego_Widzenia"] = dzisiaj
-                car["Status"] = "Aktywne"
-                car["Wazne_Od"] = dzisiaj
-                car["Wazne_Do"] = NIESKONCZONOSC
                 car["Ilosc_Powtorzen"] = 1
-                wstaw_nowy_rekord(cursor, car)
-
-                mem_db["ids"][car_id] = {"cena": car["Cena_PLN"], "data_dodania": car["Data_Dodania"], "ilosc_powtorzen": 1}
-                mem_db["klony"][key] = car_id
                 stats["otwarte"] += 1
+            
+            car["Data_Ostatniego_Widzenia"] = dzisiaj
+            car["Status"] = "Aktywne"
+            car["Wazne_Od"] = dzisiaj
+            car["Wazne_Do"] = NIESKONCZONOSC
+            wstaw_nowy_rekord(cursor, car)
+
+            mem_db["ids"][car_id] = {"cena": car["Cena_PLN"], "data_dodania": car["Data_Dodania"], "ilosc_powtorzen": car["Ilosc_Powtorzen"]}
+            if key:
+                mem_db["klony"][key] = car_id
 
     conn.commit()
 
@@ -381,6 +423,8 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
     
     aktualna_strona = 1
     koniec_wynikow = False
+    nieudane_strony = []
+    aktywne_przed = len(mem_db["ids"])
 
     while aktualna_strona <= MAX_STRON and not koniec_wynikow:
         ostatnia_w_paczce = min(aktualna_strona + STRON_W_PACZCE - 1, MAX_STRON)
@@ -394,7 +438,10 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
             
             for future in as_completed(futures):
                 page_num, cars_on_page = future.result()
-                if cars_on_page is None: continue
+                if cars_on_page is None:
+                    logging.warning(f"Strona {page_num}: nie udało się pobrać po {MAX_PROB_NA_STRONE} próbach.")
+                    nieudane_strony.append(page_num)
+                    continue
                 if not cars_on_page:
                     logging.info(f"Strona {page_num} jest pusta.")
                     koniec_wynikow = True
@@ -414,34 +461,56 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
         time.sleep(random.uniform(2.0, 4.0))
         aktualna_strona = ostatnia_w_paczce + 1
 
+    zamkniete_ogloszenia = 0
     cursor = conn.cursor()
-    cursor.execute(f"""
-        INSERT INTO otomoto_scd2 (
-            ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
-            Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
-            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
-            Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
-            Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
-            Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, Detale_Pobrane
-        )
-        SELECT 
-            ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
-            Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
-            Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
-            Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
-            Nazwa_Sprzedawcy, Link, Data_Dodania, ?,
-            'Zakończone', ?, ?, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, 1
-        FROM otomoto_scd2
-        WHERE Data_Ostatniego_Widzenia != ? AND Wazne_Do = ? AND Status = 'Aktywne'
-    """, (dzisiaj, dzisiaj, NIESKONCZONOSC, dzisiaj, NIESKONCZONOSC))
-    
-    zamkniete_ogloszenia = cursor.rowcount
-
     cursor.execute("""
-        UPDATE otomoto_scd2 
-        SET Wazne_Do = ?
+        SELECT COUNT(*) FROM otomoto_scd2
         WHERE Data_Ostatniego_Widzenia != ? AND Wazne_Do = ? AND Status = 'Aktywne'
-    """, (dzisiaj, dzisiaj, NIESKONCZONOSC))
+    """, (dzisiaj, NIESKONCZONOSC))
+    do_zamkniecia = cursor.fetchone()[0]
+
+    # Zamykamy "niewidziane" ogłoszenia tylko po kompletnym skanie. Inaczej blokada, zmiana struktury strony
+    # albo limit stron Otomoto zamknęłyby naraz wszystkie aktywne ogłoszenia i zepsuły historię SCD2.
+    powod_pominiecia = None
+    if nieudane_strony:
+        powod_pominiecia = f"nie pobrano stron: {sorted(nieudane_strony)[:10]}"
+    elif not koniec_wynikow:
+        powod_pominiecia = f"skan nie dotarł do końca wyników (limit {MAX_STRON} stron)"
+    elif not seen_in_this_run:
+        powod_pominiecia = "skan nie zwrócił żadnych ogłoszeń (blokada lub zmiana struktury strony?)"
+    elif aktywne_przed >= MIN_AKTYWNYCH_DLA_BEZPIECZNIKA and do_zamkniecia > MAX_ZAMKNIEC_PROC * aktywne_przed:
+        powod_pominiecia = (f"do zamknięcia {do_zamkniecia} z {aktywne_przed} aktywnych "
+                            f"(> {MAX_ZAMKNIEC_PROC:.0%}), to wygląda na niepełny skan")
+
+    if powod_pominiecia:
+        logging.error(f"[FAZA 1] Pomijam zamykanie ogłoszeń: {powod_pominiecia}.")
+    else:
+        cursor.execute("""
+            INSERT INTO otomoto_scd2 (
+                ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
+                Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
+                Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
+                Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
+                Nazwa_Sprzedawcy, Link, Data_Dodania, Data_Ostatniego_Widzenia,
+                Status, Wazne_Od, Wazne_Do, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, Detale_Pobrane
+            )
+            SELECT 
+                ID_Ogloszenia, Marka, Model, Tytul, Cena_PLN, Przebieg_km, Paliwo,
+                Rok_produkcji, Pojemnosc_cm3, Moc_KM, Skrzynia_biegow, 
+                Kraj_pochodzenia, Bezwypadkowy, Pierwszy_wlasciciel, Uszkodzony, 
+                Miasto, Wojewodztwo, Miejsce, Czas_publikacji, Sprzedawca, 
+                Nazwa_Sprzedawcy, Link, Data_Dodania, ?,
+                'Zakończone', ?, ?, Opis, Sprzedawca_Od, Ilosc_Powtorzen, Is_Outlier, 1
+            FROM otomoto_scd2
+            WHERE Data_Ostatniego_Widzenia != ? AND Wazne_Do = ? AND Status = 'Aktywne'
+        """, (dzisiaj, dzisiaj, NIESKONCZONOSC, dzisiaj, NIESKONCZONOSC))
+        zamkniete_ogloszenia = cursor.rowcount
+
+        cursor.execute("""
+            UPDATE otomoto_scd2 
+            SET Wazne_Do = ?
+            WHERE Data_Ostatniego_Widzenia != ? AND Wazne_Do = ? AND Status = 'Aktywne'
+        """, (dzisiaj, dzisiaj, NIESKONCZONOSC))
     conn.commit()
 
     logging.info(f"== PODSUMOWANIE FAZY 1 ==")
@@ -583,6 +652,7 @@ def faza_2_uzupelnij_detale(conn):
         
         uzupelnione = 0
         wygasle = 0
+        nieudane = 0
         
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_FAZA_2) as executor:
             futures = {executor.submit(pobierz_detale_z_linku, row[1]): row for row in do_poprawy}
@@ -624,15 +694,17 @@ def faza_2_uzupelnij_detale(conn):
                     """, (final_b, final_p, final_u, final_o, final_s, final_ns, car_id, NIESKONCZONOSC))
                     uzupelnione += 1
                 else:
+                    # Nie nadpisujemy Opis tekstem błędu. Licznik prób: po MAX_PROB_DETALI porażkach odpuszczamy.
                     cursor.execute("""
                         UPDATE otomoto_scd2
-                        SET Opis = 'Błąd pobierania', Detale_Pobrane = 1
+                        SET Proby_Detali = COALESCE(Proby_Detali, 0) + 1,
+                            Detale_Pobrane = CASE WHEN COALESCE(Proby_Detali, 0) + 1 >= ? THEN 1 ELSE 0 END
                         WHERE ID_Ogloszenia = ? AND Wazne_Do = ?
-                    """, (car_id, NIESKONCZONOSC))
-                    uzupelnione += 1
+                    """, (MAX_PROB_DETALI, car_id, NIESKONCZONOSC))
+                    nieudane += 1
 
         conn.commit()
-        logging.info(f"[FAZA 2] Paczka zakończona! Odwiedzono {uzupelnione} aut. Oznaczono jako wygasłe: {wygasle}.")
+        logging.info(f"[FAZA 2] Paczka zakończona! Uzupełniono {uzupelnione} aut. Oznaczono jako wygasłe: {wygasle}. Nieudane (do ponowienia): {nieudane}.")
         time.sleep(5)
 
 def main():
