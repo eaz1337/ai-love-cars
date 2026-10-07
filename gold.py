@@ -14,8 +14,24 @@ STAWKA_VAT = 0.19
 OPLATY_PORTOWE_TUMACZENIA_PLN = 2500
 TRANSPORT_DO_PL_PLN = 1800
 
-# NOWOŚĆ: Szacunkowy budżet na naprawę rozbitego auta z licytacji w PLN
-SZACOWANY_KOSZT_NAPRAWY_PLN = 20000 
+# Koszt naprawy rozbitego auta z licytacji = udział w wartości auta (cena rynkowa z Otomoto), zależny od rodzaju uszkodzenia.
+# Stała kwota zawyżała koszt tanich aut (20 tys. zł na aucie za 35 tys.) i zaniżała go dla drogich.
+# To ZAŁOŻENIA, nie dane: z bazy nie da się ich skalibrować (cena aukcyjna prawie nie zależy od typu uszkodzenia),
+# więc dostrój je do własnych doświadczeń z naprawami. Pierwsze pasujące wyrażenie wygrywa (kolejność ma znaczenie).
+UDZIAL_NAPRAWY_WG_USZKODZEN = [
+    (r'burn|fire', 0.40),
+    (r'flood|water', 0.35),
+    (r'frame|rollover|roof|all over|undercarriage|strip', 0.35),
+    (r'front and rear|left and right', 0.30),
+    (r'engine|transmission|mechanical|electrical|suspension', 0.25),
+    (r'front', 0.20),
+    (r'side', 0.15),
+    (r'rear', 0.12),
+    (r'hail|storm|theft', 0.10),
+    (r'minor|normal wear|vandal|biohazard|partial repair|repossession|damage history', 0.05),
+]
+DOMYSLNY_UDZIAL_NAPRAWY = 0.20   # nieznane lub brakujące uszkodzenie
+MIN_KOSZT_NAPRAWY_PLN = 3000     # nawet drobne uszkodzenie kosztuje (części, lakier, robocizna)
 
 # Ścieżkę można nadpisać zmienną środowiskową, domyślnie baza leży w katalogu, z którego uruchamiasz skrypt (jak w scraperach)
 DB_PATH = os.environ.get('SAMOCHODY_DB', 'samochody.db')
@@ -75,6 +91,14 @@ def map_model_dynamic(marka, bidfax_model, otomoto_models_for_brand):
                 return o_model
             
     return b_model.split()[0] if b_model else "nieznany"
+
+def udzial_naprawy(damage):
+    """Jaką część wartości auta pochłonie naprawa, na podstawie opisu uszkodzenia z Bidfax."""
+    tekst = str(damage).lower()
+    for wzorzec, udzial in UDZIAL_NAPRAWY_WG_USZKODZEN:
+        if re.search(wzorzec, tekst):
+            return udzial
+    return DOMYSLNY_UDZIAL_NAPRAWY
 
 def extract_capacity_bidfax(title):
     match = re.search(r'(\d\.\d)L', str(title), re.IGNORECASE)
@@ -199,16 +223,18 @@ if __name__ == '__main__':
     bidfax_df['Akcyza_PLN'] = bidfax_df['Wartosc_do_Akcyzy_PLN'] * bidfax_df['Stawka_Akcyzy']
     bidfax_df['Wartosc_do_VAT_PLN'] = bidfax_df['Wartosc_do_Akcyzy_PLN'] + bidfax_df['Akcyza_PLN']
     bidfax_df['VAT_PLN'] = bidfax_df['Wartosc_do_VAT_PLN'] * STAWKA_VAT
-    bidfax_df['Calkowity_Koszt_Sprowadzenia_Baza_PLN'] = (
+    bidfax_df['Udzial_Naprawy'] = bidfax_df['Damage'].apply(udzial_naprawy)
+    bidfax_df['Koszt_Import_PLN'] = (
         bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Fracht_Morski_Aukcja_PLN'] + 
         bidfax_df['Clo_PLN'] + bidfax_df['Akcyza_PLN'] + bidfax_df['VAT_PLN'] + 
-        OPLATY_PORTOWE_TUMACZENIA_PLN + TRANSPORT_DO_PL_PLN + SZACOWANY_KOSZT_NAPRAWY_PLN
+        OPLATY_PORTOWE_TUMACZENIA_PLN + TRANSPORT_DO_PL_PLN
     )
 
     usa_agg = bidfax_df.groupby(['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Rocznik']).agg(
         Cena_Zakupu_USA_USD=('Cena_USD', 'median'),
         Procent_Hybryd=('Czy_Hybryda', 'mean'), 
-        Calkowity_Koszt_Sprowadzenia_Baza_PLN=('Calkowity_Koszt_Sprowadzenia_Baza_PLN', 'median'),
+        Koszt_Import_PLN=('Koszt_Import_PLN', 'median'),
+        Udzial_Naprawy=('Udzial_Naprawy', 'median'),
         Srednie_Clo_PLN=('Clo_PLN', 'median'),
         Srednia_Akcyza_PLN=('Akcyza_PLN', 'median'),
         Sredni_VAT_PLN=('VAT_PLN', 'median'),
@@ -230,6 +256,11 @@ if __name__ == '__main__':
     if 'Ilosc_Krajowe' in gold_layer.columns:
         gold_layer['Ilosc_Krajowe'] = gold_layer['Ilosc_Krajowe'].fillna(0).astype(int)
 
+    # Koszt naprawy liczymy dopiero tu, bo zależy od ceny rynkowej auta (po złączeniu z Otomoto)
+    gold_layer['Koszt_Naprawy_PLN'] = (gold_layer['Udzial_Naprawy'] * gold_layer['Cena_USA_Kanada_Otomoto_PLN']).clip(lower=MIN_KOSZT_NAPRAWY_PLN)
+    gold_layer['Udzial_Naprawy_%'] = gold_layer['Udzial_Naprawy'] * 100
+    gold_layer['Calkowity_Koszt_Sprowadzenia_Baza_PLN'] = gold_layer['Koszt_Import_PLN'] + gold_layer['Koszt_Naprawy_PLN']
+
     gold_layer['Budzet_Zysk_PLN'] = gold_layer['Cena_USA_Kanada_Otomoto_PLN'] - gold_layer['Calkowity_Koszt_Sprowadzenia_Baza_PLN']
     gold_layer['ROI_%'] = (gold_layer['Budzet_Zysk_PLN'] / gold_layer['Calkowity_Koszt_Sprowadzenia_Baza_PLN'] * 100).round(1)
     gold_layer['Marza_%'] = (gold_layer['Budzet_Zysk_PLN'] / gold_layer['Cena_USA_Kanada_Otomoto_PLN'] * 100).round(1)
@@ -242,7 +273,7 @@ if __name__ == '__main__':
         'Marka', 'Model', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN',
         'Cena_Zakupu_USA_USD', 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
-        'Calkowity_Koszt_Sprowadzenia_Baza_PLN', 'Budzet_Zysk_PLN', 'ROI_%', 'Marza_%'
+        'Udzial_Naprawy_%', 'Koszt_Naprawy_PLN', 'Calkowity_Koszt_Sprowadzenia_Baza_PLN', 'Budzet_Zysk_PLN', 'ROI_%', 'Marza_%'
     ]
     if 'Ilosc_Krajowe' in gold_layer.columns and 'Cena_Krajowe_PLN' in gold_layer.columns:
         base_cols.insert(7, 'Ilosc_Krajowe')
