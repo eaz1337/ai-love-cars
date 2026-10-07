@@ -36,7 +36,8 @@ MAX_ROK_PRODUKCJI = datetime.now().year + 1
 # BAZA DANYCH SQLITE
 # ==============================================================================
 def zainicjalizuj_baze():
-    conn = sqlite3.connect(DB_NAME)
+    # POPRAWKA 1: Wydłużono timeout do 30 sekund, aby uniknąć błędu "database is locked"
+    conn = sqlite3.connect(DB_NAME, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bidfax_scd2 (
@@ -286,10 +287,15 @@ def main():
                 
                 aktualna_strona += 1
                 
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM bidfax_scd2 WHERE Date_Of_Sale < ? AND Date_Of_Sale != 'Brak'", 
-                       ((datetime.now() - timedelta(days=OKNO_HISTORII_DNI)).strftime("%Y-%m-%d"),))
-        conn.commit()
+        # POPRAWKA 2: Dodano blok try..except podczas czyszczenia bazy na koniec skryptu
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM bidfax_scd2 WHERE Date_Of_Sale < ? AND Date_Of_Sale != 'Brak'", 
+                           ((datetime.now() - timedelta(days=OKNO_HISTORII_DNI)).strftime("%Y-%m-%d"),))
+            conn.commit()
+            cursor.close()
+        except sqlite3.OperationalError as e:
+            logging.error(f"Błąd czyszczenia starych rekordów (baza zablokowana): {e}")
         
     except KeyboardInterrupt:
         logging.info("Przerwano działanie skryptu skrótem z klawiatury (Ctrl+C).")
