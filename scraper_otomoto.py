@@ -3,7 +3,7 @@ import re
 import time
 import random
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import logging
 import subprocess
@@ -67,6 +67,7 @@ MAX_STRON = 4000
 MAX_PROB_NA_STRONE = 3
 LIMIT_FAZY_2 = 500  
 NIESKONCZONOSC = '9999-12-31 23:59:59'
+DNI_PAMIECI_ZAMKNIETYCH = 60   # jak długo pamiętamy zamknięte ID, żeby rozpoznać ich powrót
 MAX_PROB_DETALI = 3          # tyle razy faza 2 próbuje pobrać detale ogłoszenia, potem odpuszcza
 MAX_ZAMKNIEC_PROC = 0.30     # bezpiecznik: nie zamykamy naraz więcej niż 30% aktywnych ogłoszeń
 MIN_AKTYWNYCH_DLA_BEZPIECZNIKA = 50
@@ -121,20 +122,32 @@ def zainicjalizuj_baze():
 def pobierz_indeks_aut(conn):
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT ID_Ogloszenia, Tytul, Rok_produkcji, Przebieg_km, Sprzedawca, Paliwo, Skrzynia_biegow, Cena_PLN, Data_Dodania, Ilosc_Powtorzen
+        SELECT ID_Ogloszenia, Tytul, Rok_produkcji, Przebieg_km, Sprzedawca, Paliwo, Skrzynia_biegow, Cena_PLN, Data_Dodania, Ilosc_Powtorzen,
+               Miasto, Wojewodztwo
         FROM otomoto_scd2
         WHERE Wazne_Do = ? AND Status = 'Aktywne'
     """, (NIESKONCZONOSC,))
     rows = cursor.fetchall()
     
-    mem_db = {"ids": {}, "klony": {}}
+    mem_db = {"ids": {}, "klony": {}, "zamkniete": {}}
     for row in rows:
-        (car_id, tytul, rok, przebieg, sprzedawca, paliwo, skrzynia, cena, data_dod, ilosc_powt) = row
+        (car_id, tytul, rok, przebieg, sprzedawca, paliwo, skrzynia, cena, data_dod, ilosc_powt, miasto, woj) = row
         mem_db["ids"][car_id] = {"cena": cena, "data_dodania": data_dod, "ilosc_powtorzen": ilosc_powt if ilosc_powt else 1}
         key = klucz_klona({"Tytul": tytul, "Rok_produkcji": rok, "Przebieg_km": przebieg, "Sprzedawca": sprzedawca,
-                           "Paliwo": paliwo, "Skrzynia_biegow": skrzynia})
+                           "Paliwo": paliwo, "Skrzynia_biegow": skrzynia, "Miasto": miasto, "Wojewodztwo": woj})
         if key:
             mem_db["klony"][key] = car_id
+
+    # Ogłoszenia zamknięte niedawno: jeśli to samo ID wróci (np. po niepełnym skanie), dziedziczy datę dodania
+    cursor.execute("""
+        SELECT ID_Ogloszenia, MIN(Data_Dodania), MAX(Ilosc_Powtorzen)
+        FROM otomoto_scd2
+        WHERE Status = 'Zakończone' AND Wazne_Od >= ?
+        GROUP BY ID_Ogloszenia
+    """, ((datetime.now() - timedelta(days=DNI_PAMIECI_ZAMKNIETYCH)).strftime("%Y-%m-%d %H:%M:%S"),))
+    for car_id, data_dod, ilosc_powt in cursor.fetchall():
+        if car_id not in mem_db["ids"]:
+            mem_db["zamkniete"][car_id] = {"data_dodania": data_dod, "ilosc_powtorzen": ilosc_powt or 1}
         
     return mem_db
 
@@ -333,7 +346,8 @@ def klucz_klona(car):
     (puste wartości zlałyby różne auta w jeden 'klon'), więc zwracamy None."""
     if car['Rok_produkcji'] is None or car['Przebieg_km'] is None:
         return None
-    return (car['Tytul'], car['Rok_produkcji'], car['Przebieg_km'], car['Sprzedawca'], car['Paliwo'], car['Skrzynia_biegow'])
+    return (car['Tytul'], car['Rok_produkcji'], car['Przebieg_km'], car['Sprzedawca'], car['Paliwo'], car['Skrzynia_biegow'],
+            car.get('Miasto'), car.get('Wojewodztwo'))
 
 def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
     if not paczka: return
@@ -387,7 +401,13 @@ def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
             # dziedziczy Data_Dodania i licznik powtórzeń. Starego wiersza nie ruszamy: jeśli ogłoszenie zniknęło,
             # zamknie je krok końcowy, a jeśli oba są aktywne, każde ma własną historię (bez przepisywania ID).
             stare_id = mem_db["klony"].get(key) if key else None
-            if stare_id and stare_id in mem_db["ids"]:
+            if car_id in mem_db["zamkniete"]:
+                # To samo ogłoszenie wróciło po zamknięciu (np. skan był wtedy niepełny): zachowujemy historię
+                zamkniete = mem_db["zamkniete"].pop(car_id)
+                car["Data_Dodania"] = zamkniete["data_dodania"]
+                car["Ilosc_Powtorzen"] = zamkniete["ilosc_powtorzen"]
+                stats["wznowione"] += 1
+            elif stare_id and stare_id in mem_db["ids"]:
                 stare = mem_db["ids"][stare_id]
                 car["Data_Dodania"] = stare["data_dodania"]
                 car["Ilosc_Powtorzen"] = stare["ilosc_powtorzen"] + 1
@@ -419,7 +439,7 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
     
     seen_in_this_run = set()
     paczka_buffer = []
-    stats = {"otwarte": 0, "zmiana_ceny": 0, "wykryte_klony": 0}
+    stats = {"otwarte": 0, "zmiana_ceny": 0, "wykryte_klony": 0, "wznowione": 0}
     
     aktualna_strona = 1
     koniec_wynikow = False
@@ -516,6 +536,8 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
     logging.info(f"== PODSUMOWANIE FAZY 1 ==")
     logging.info(f" -> Nowe auta: {stats['otwarte']}")
     logging.info(f" -> Ilość powtórzonych wystawień (Klony): {stats['wykryte_klony']}")
+    logging.info(f" -> Wznowione ID (wróciły po zamknięciu): {stats['wznowione']}")
+    logging.info(f" -> Widzianych w tym skanie: {len(seen_in_this_run)} (aktywnych przed skanem: {aktywne_przed})")
     logging.info(f" -> Zmiany cen (SCD2): {stats['zmiana_ceny']}")
     logging.info(f" -> Ogłoszenia Zakończone: {zamkniete_ogloszenia}")
     logging.info(f" -> Aktualnie aktywnych w bazie: {len(mem_db['ids'])}")

@@ -163,7 +163,7 @@ def wyciagnij_dane_z_html(html_content, marka):
 
         cars.append({"Tytul": tytul, "Marka": marka, "Model": model, "Rocznik": rocznik, "VIN": vin,
                      "Cena_USD": cena, "Aukcja": detale["Aukcja"], "Lokalizacja": detale["Lokalizacja"],
-                     "Lot_Number": detale["Lot number"], "Condition": detale["Condition"],
+                     "Lot_Number": detale["Lot number"], "Condition": detale["Condition"].title(),
                      "Damage": detale["Damage"], "Mileage": detale["Mileage"],
                      "Date_Of_Sale": detale["Date of sale"], "Link": link})
     return cars

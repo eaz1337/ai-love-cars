@@ -16,3 +16,6 @@ drission-profile/
 # Python temporary files
 __pycache__/
 *.pyc
+
+# Local data samples (contain seller data)
+*_sample.csv
