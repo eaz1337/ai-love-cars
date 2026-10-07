@@ -17,7 +17,12 @@ TRANSPORT_DO_PL_PLN = 1800
 # NOWOŚĆ: Szacunkowy budżet na naprawę rozbitego auta z licytacji w PLN
 SZACOWANY_KOSZT_NAPRAWY_PLN = 20000 
 
-DB_PATH = '/home/eaz/Desktop/github/ai-love-cars/samochody.db'
+# Ścieżkę można nadpisać zmienną środowiskową, domyślnie baza leży w katalogu, z którego uruchamiasz skrypt (jak w scraperach)
+DB_PATH = os.environ.get('SAMOCHODY_DB', 'samochody.db')
+
+# Minimalna liczba aukcji USA i ogłoszeń Otomoto w grupie (marka, model, pojemność, rocznik)
+MIN_AUKCJI_USA = 3
+MIN_OGLOSZEN_OTOMOTO = 3
 
 # ==========================================
 # 2. FUNKCJE POMOCNICZE I MAPOWANIE
@@ -28,20 +33,26 @@ US_EU_ALIASES = {
     'volkswagen': {'jetta': 'jetta', 'passat': 'passat'}
 }
 
+def _slowo_w_tekscie(szukane, tekst):
+    """True, jeśli `szukane` występuje w `tekst` jako osobne słowo (np. 'rogue' w 'rogue sv', ale nie 'e' w 'escape')."""
+    return re.search(r'(?<![a-z0-9])' + re.escape(szukane) + r'(?![a-z0-9])', tekst) is not None
+
 def map_model_dynamic(marka, bidfax_model, otomoto_models_for_brand):
     marka = str(marka).lower()
     b_model = str(bidfax_model).lower()
     
     if marka in US_EU_ALIASES:
-        for us_name, eu_name in US_EU_ALIASES[marka].items():
-            if us_name in b_model:
+        # Najdłuższe nazwy najpierw: 'rogue sport' (qashqai) musi wygrać z 'rogue' (x-trail)
+        for us_name, eu_name in sorted(US_EU_ALIASES[marka].items(), key=lambda kv: len(kv[0]), reverse=True):
+            if _slowo_w_tekscie(us_name, b_model):
                 return eu_name
                 
     if marka == 'bmw':
-        match = re.search(r'\b([1-8])\d\d\b|x[1-7]|i[3478]', b_model)
+        # 328 i, 530i, m550i -> seria 3/5; x5; i3. Nazwy z dopiskiem (530i, m550i) też są łapane, wzorce są zakotwiczone
+        match = re.search(r'\bm?([1-8])\d\d[a-z]{0,2}\b|\bx[1-7]\b|\bi[3478]\b', b_model)
         if match:
             matched_str = match.group(0)
-            if matched_str.startswith('x') or matched_str.startswith('i'):
+            if re.fullmatch(r'x[1-7]|i[3478]', matched_str):
                 return matched_str 
             else:
                 return f"seria {match.group(1)}" 
@@ -53,7 +64,14 @@ def map_model_dynamic(marka, bidfax_model, otomoto_models_for_brand):
             
     if otomoto_models_for_brand is not None:
         for o_model in sorted(list(otomoto_models_for_brand), key=len, reverse=True):
-            if o_model in b_model:
+            if o_model in ('', 'nan', 'none'):
+                continue
+            if len(o_model) == 1:
+                # Jednoliterowy model (np. 'g', 'e') tylko jako całe słowo, inaczej łapie się w środku innych nazw
+                if _slowo_w_tekscie(o_model, b_model):
+                    return o_model
+            elif re.search(r'(?<![a-z0-9])' + re.escape(o_model), b_model):
+                # Lewa granica słowa wystarczy: 'rx' pasuje do 'rx350', ale 'x5' nie pasuje do 'ex5'
                 return o_model
             
     return b_model.split()[0] if b_model else "nieznany"
@@ -91,6 +109,29 @@ if __name__ == '__main__':
         bidfax_df = pd.read_sql_query("SELECT * FROM bidfax_scd2", conn)
         otomoto_df = pd.read_sql_query("SELECT * FROM otomoto_scd2", conn)
 
+    # --- Otomoto: jedno ogłoszenie = jeden wiersz ---
+    # Tabela SCD2 trzyma każdą wersję ceny oraz końcową kopię 'Zakończone'. Bez deduplikacji jedno ogłoszenie liczy się
+    # kilka razy (zawyża liczebność grupy i wagę starych cen). Bierzemy ostatnią wersję, bez outlierów i bez braku ceny.
+    otomoto_df = otomoto_df.sort_values('ID_Wersji').drop_duplicates('ID_Ogloszenia', keep='last')
+    if 'Is_Outlier' in otomoto_df.columns:
+        otomoto_df = otomoto_df[otomoto_df['Is_Outlier'].fillna(0) == 0]
+    otomoto_df['Cena_PLN'] = pd.to_numeric(otomoto_df['Cena_PLN'], errors='coerce')
+    otomoto_df = otomoto_df[otomoto_df['Cena_PLN'] > 0]
+
+    # --- Bidfax: tylko aukcje z ceną i rocznikiem, jedna sprzedaż na VIN ---
+    # Brak ceny lub rocznika to NULL (nie 0), a brak rocznika złączyłby się z 'Rok_produkcji = 0' z Otomoto.
+    bidfax_df['Cena_USD'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce')
+    bidfax_df['Rocznik'] = pd.to_numeric(bidfax_df['Rocznik'], errors='coerce')
+    bidfax_df = bidfax_df[(bidfax_df['Cena_USD'] > 0) & (bidfax_df['Rocznik'] > 0)].copy()
+    bidfax_df['Rocznik'] = bidfax_df['Rocznik'].astype(int)
+    # To samo auto wystawiane na kolejnych aukcjach (niesprzedane, odsprzedane) liczy się raz: ostatnia sprzedaż
+    ma_vin = bidfax_df['VIN'].notna() & (bidfax_df['VIN'] != 'Brak')
+    bidfax_df['_data_sort'] = bidfax_df['Date_Of_Sale'].where(bidfax_df['Date_Of_Sale'] != 'Brak', '')
+    bidfax_df = pd.concat([
+        bidfax_df[~ma_vin],
+        bidfax_df[ma_vin].sort_values('_data_sort').drop_duplicates('VIN', keep='last'),
+    ]).drop(columns=['_data_sort'])
+
     otomoto_df['Marka'] = otomoto_df['Marka'].astype(str).str.lower().str.strip()
     otomoto_df['Model'] = otomoto_df['Model'].astype(str).str.lower().str.strip()
     bidfax_df['Marka'] = bidfax_df['Marka'].astype(str).str.lower().str.strip()
@@ -110,12 +151,9 @@ if __name__ == '__main__':
     else:
         otomoto_df['Pojemnosc_L'] = None
     
-    bidfax_df['Rocznik'] = pd.to_numeric(bidfax_df['Rocznik'], errors='coerce').fillna(0).astype(int)
-    
-    if 'Rok_produkcji' in otomoto_df.columns:
-        otomoto_df['Rok_produkcji'] = pd.to_numeric(otomoto_df['Rok_produkcji'], errors='coerce').fillna(0).astype(int)
-    else:
-        otomoto_df['Rok_produkcji'] = 0
+    otomoto_df['Rok_produkcji'] = pd.to_numeric(otomoto_df['Rok_produkcji'], errors='coerce')
+    otomoto_df = otomoto_df[otomoto_df['Rok_produkcji'] > 0].copy()
+    otomoto_df['Rok_produkcji'] = otomoto_df['Rok_produkcji'].astype(int)
     
     bidfax_df['Czy_Hybryda'] = bidfax_df.apply(lambda row: is_hybrid(row['Tytul'], row['Marka'], row['Otomoto_Model']), axis=1)
     
@@ -168,7 +206,7 @@ if __name__ == '__main__':
     )
 
     usa_agg = bidfax_df.groupby(['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Rocznik']).agg(
-        Cena_Zakupu_USA_USD=('Cena_USD', lambda x: np.median(pd.to_numeric(x, errors='coerce'))),
+        Cena_Zakupu_USA_USD=('Cena_USD', 'median'),
         Procent_Hybryd=('Czy_Hybryda', 'mean'), 
         Calkowity_Koszt_Sprowadzenia_Baza_PLN=('Calkowity_Koszt_Sprowadzenia_Baza_PLN', 'median'),
         Srednie_Clo_PLN=('Clo_PLN', 'median'),
@@ -177,7 +215,7 @@ if __name__ == '__main__':
         Ilosc_Aukcje_USA=('ID', 'count')
     ).reset_index()
     
-    usa_agg = usa_agg[usa_agg['Ilosc_Aukcje_USA'] >= 3]
+    usa_agg = usa_agg[usa_agg['Ilosc_Aukcje_USA'] >= MIN_AUKCJI_USA]
 
     gold_layer = pd.merge(usa_agg, otomoto_agg, left_on=['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Rocznik'], right_on=['Marka', 'Model', 'Pojemnosc_L', 'Rok_produkcji'], how='inner')
     gold_layer.drop(columns=['Otomoto_Model'], inplace=True)
@@ -186,7 +224,7 @@ if __name__ == '__main__':
     gold_layer = gold_layer.dropna(subset=['Cena_USA_Kanada_Otomoto_PLN'])
     
     # NOWOŚĆ: Filtr - zostawiamy tylko te modele, których na Otomoto jest min. 3 sztuki, by jedna anomalia cenowa nie psuła wyniku
-    gold_layer = gold_layer[gold_layer['Ilosc_USA_Kanada_Otomoto'] >= 3]
+    gold_layer = gold_layer[gold_layer['Ilosc_USA_Kanada_Otomoto'] >= MIN_OGLOSZEN_OTOMOTO]
 
     # NOWOŚĆ: Zamiana NULLi w ilości aut z polskich salonów na czytelne zera
     if 'Ilosc_Krajowe' in gold_layer.columns:
@@ -195,6 +233,10 @@ if __name__ == '__main__':
     gold_layer['Budzet_Zysk_PLN'] = gold_layer['Cena_USA_Kanada_Otomoto_PLN'] - gold_layer['Calkowity_Koszt_Sprowadzenia_Baza_PLN']
     gold_layer['ROI_%'] = (gold_layer['Budzet_Zysk_PLN'] / gold_layer['Calkowity_Koszt_Sprowadzenia_Baza_PLN'] * 100).round(1)
     gold_layer['Marza_%'] = (gold_layer['Budzet_Zysk_PLN'] / gold_layer['Cena_USA_Kanada_Otomoto_PLN'] * 100).round(1)
+
+    # Kontrola spójności: koszt musi być dodatni, a marża i ROI muszą wynikać z tego samego zysku
+    assert (gold_layer['Calkowity_Koszt_Sprowadzenia_Baza_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
+    assert (np.sign(gold_layer['ROI_%']) == np.sign(gold_layer['Marza_%'])).all(), "ROI i marża mają różne znaki"
 
     base_cols = [
         'Marka', 'Model', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
@@ -214,3 +256,6 @@ if __name__ == '__main__':
     
     with sqlite3.connect(DB_PATH) as conn:
         gold_layer.to_sql(table_name, conn, if_exists='replace', index=False)
+
+    ujemne = int((gold_layer['Marza_%'] < 0).sum())
+    print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (marża ujemna: {ujemne}).")
