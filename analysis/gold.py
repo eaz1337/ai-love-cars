@@ -4,7 +4,8 @@ import re
 import sqlite3
 import os
 
-from wersje import WERSJA_PODSTAWOWA, buduj_slownik, tokeny_wersji, wersja
+from slownik import szkic_slownika, wczytaj_slownik, wersja_reczna
+from wersje import WERSJA_PODSTAWOWA, buduj_slownik, tokeny_wersji, uzupelnij_wersje_z_mocy, wersja
 
 # ==========================================
 # 1. KONFIGURACJA ZMIENNYCH FINANSOWYCH
@@ -44,6 +45,8 @@ MIN_OGLOSZEN_OTOMOTO = 3
 
 # Rozdzielaj grupy też po wersji (S / GTS / Turbo...), patrz wersje.py. Wyłączenie daje stare, grubsze grupy
 UZYWAJ_WERSJI = os.environ.get('GOLD_WERSJE', '1') != '0'
+# Ręczny słownik wersji (patrz slownik.py), ma pierwszeństwo przed wyuczonym dla modeli, które w nim są
+SLOWNIK_WERSJI = os.environ.get('GOLD_SLOWNIK_WERSJI', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'slownik_wersji.csv'))
 
 # ==========================================
 # 2. FUNKCJE POMOCNICZE I MAPOWANIE
@@ -190,6 +193,29 @@ if __name__ == '__main__':
         slownik = buduj_slownik(otomoto_df, bidfax_df)
         otomoto_df['Wersja'] = [wersja(t, ma, mo, slownik) for t, ma, mo in zip(otomoto_df['Tokeny'], otomoto_df['Marka'], otomoto_df['Model'])]
         bidfax_df['Wersja'] = [wersja(t, ma, om, slownik) for t, ma, om in zip(bidfax_df['Tokeny'], bidfax_df['Marka'], bidfax_df['Otomoto_Model'])]
+        # Ogłoszenia bez wersji w tytule dostają ją z mocy (Bidfax nie ma mocy, tam wersja zostaje z tytułu)
+        wersja_z_tytulu = otomoto_df['Wersja']
+        otomoto_df['Wersja'] = uzupelnij_wersje_z_mocy(otomoto_df)
+        print(f"ℹ️  Wersja z mocy: {int((otomoto_df['Wersja'] != wersja_z_tytulu).sum())} z {len(otomoto_df)} ogłoszeń Otomoto "
+              f"(z tytułu: {int((wersja_z_tytulu != WERSJA_PODSTAWOWA).sum())}).")
+
+        # Ręczny słownik nadpisuje wszystko powyżej dla modeli, które w nim są
+        reczny = wczytaj_slownik(SLOWNIK_WERSJI)
+        if reczny:
+            w_slowniku_o = pd.Series([(ma, mo) in reczny for ma, mo in zip(otomoto_df['Marka'], otomoto_df['Model'])], index=otomoto_df.index)
+            otomoto_df.loc[w_slowniku_o, 'Wersja'] = [
+                wersja_reczna(t, reczny[(ma, mo)], moc, poj) for t, ma, mo, moc, poj in zip(
+                    otomoto_df.loc[w_slowniku_o, 'Tokeny'], otomoto_df.loc[w_slowniku_o, 'Marka'], otomoto_df.loc[w_slowniku_o, 'Model'],
+                    pd.to_numeric(otomoto_df.loc[w_slowniku_o, 'Moc_KM'], errors='coerce'), otomoto_df.loc[w_slowniku_o, 'Pojemnosc_L'])]
+            w_slowniku_b = pd.Series([(ma, om) in reczny for ma, om in zip(bidfax_df['Marka'], bidfax_df['Otomoto_Model'])], index=bidfax_df.index)
+            bidfax_df.loc[w_slowniku_b, 'Wersja'] = [
+                wersja_reczna(t, reczny[(ma, om)]) for t, ma, om in zip(
+                    bidfax_df.loc[w_slowniku_b, 'Tokeny'], bidfax_df.loc[w_slowniku_b, 'Marka'], bidfax_df.loc[w_slowniku_b, 'Otomoto_Model'])]
+            print(f"ℹ️  Ręczny słownik wersji: {len(reczny)} modeli ({int(w_slowniku_o.sum())} ogłoszeń Otomoto, {int(w_slowniku_b.sum())} aukcji Bidfax).")
+
+        if os.environ.get('GOLD_SZKIC_SLOWNIKA'):
+            szkic_slownika(otomoto_df, slownik).to_csv(os.environ['GOLD_SZKIC_SLOWNIKA'], index=False)
+            print(f"ℹ️  Zapisano szkic słownika do {os.environ['GOLD_SZKIC_SLOWNIKA']}")
     else:
         otomoto_df['Wersja'] = WERSJA_PODSTAWOWA
         bidfax_df['Wersja'] = WERSJA_PODSTAWOWA

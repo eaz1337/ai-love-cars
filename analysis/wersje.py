@@ -14,6 +14,10 @@ MIN_OGLOSZEN_SLOWA_OTOMOTO = 5   # tyle ogłoszeń z danym słowem trzeba, żeby
 MIN_AUKCJI_SLOWA_BIDFAX = 2      # słowo musi występować także w Bidfax, inaczej rozdzieliłoby tylko jedną stronę
 PROG_ROZNICY_MOCY = 0.04         # mediana mocy aut ze słowem różni się o min. 4% od mediany grupy
 PROG_ROZNICY_CENY = 0.15         # albo mediana ceny różni się o min. 15% (cena porównywana w obrębie rocznika)
+MIN_WZORCOW_MOCY = 3             # tyle ogłoszeń z wersją w tytule musi mieć dana wersja, żeby służyła za wzorzec mocy
+PROG_DOPASOWANIA_MOCY = 0.03     # ogłoszenie bez wersji dostaje ją, gdy moc różni się od mocy wzorca o najwyżej 3%
+MAX_ROZRZUT_MOCY_WZORCA = 0.20   # wzorzec odpada, gdy moce jego ogłoszeń są rozrzucone (10. i 90. percentyl różnią się o >20% mediany),
+                                 # bo to znaczy, że słowo nie jest jedną wersją (np. 'st' z 'ST-Line' i prawdziwego ST)
 
 # Skrzynia i napęd to osobne cechy (Otomoto ma na nie własne kolumny), nie wersja silnikowa. Dzieliłyby grupy bez potrzeby
 IGNOROWANE_SLOWA = frozenset({
@@ -65,3 +69,38 @@ def wersja(tokeny, marka, model, slownik):
     """Etykieta wersji: posortowane słowa rozróżniające, które występują w tytule; brak takich -> 'podstawowa'."""
     istotne = sorted(set(tokeny) & slownik.get((marka, model), frozenset()))
     return ' '.join(istotne) if istotne else WERSJA_PODSTAWOWA
+
+
+def uzupelnij_wersje_z_mocy(otomoto):
+    """Ogłoszenia Otomoto bez wersji w tytule (np. 'Porsche Cayenne' z 640 KM) dostają wersję z mocy.
+
+    Wzorzec to mediana mocy ogłoszeń z wersją w tytule, osobno dla (marka, model, pojemność, paliwo), bo benzyna i diesel
+    o tej samej pojemności i mocy to różne auta (530i i 530d). Ogłoszenie bez wersji dostaje wersję wzorca, jeśli jego moc jest bliska mocy tylko jednego wzorca. Gdy pasuje kilka wersji albo żadna, zostaje 'podstawowa'.
+    Dotyczy tylko ogłoszeń, których tytuł to samo 'marka model' (pusty zbiór słów). Tytuł z innymi słowami (np. 'Titanium',
+    '20d AWD Prestige') już coś mówi o wersji lub wyposażeniu, tylko nieznanym słownikowi, więc go nie nadpisujemy.
+    Dotyczy tylko Otomoto: Bidfax nie ma mocy, więc tam wersja pochodzi wyłącznie z tytułu.
+
+    otomoto: kolumny Marka, Model, Pojemnosc_L, Paliwo, Moc_KM, Wersja, Tokeny. Zwraca nową kolumnę Wersja (ten sam indeks).
+    """
+    klucz = ['Marka', 'Model', 'Pojemnosc_L', 'Paliwo']
+    moc = pd.to_numeric(otomoto['Moc_KM'], errors='coerce')
+    ma_dane = moc.notna() & otomoto['Pojemnosc_L'].notna() & otomoto['Paliwo'].notna()
+    z_wersja = otomoto['Wersja'] != WERSJA_PODSTAWOWA
+
+    wzorce = otomoto[ma_dane & z_wersja].assign(Moc=moc)
+    wzorce = wzorce.groupby(klucz + ['Wersja'])['Moc'].agg(
+        median='median', size='size', q10=lambda m: m.quantile(0.1), q90=lambda m: m.quantile(0.9)).reset_index()
+    wzorce = wzorce[(wzorce['size'] >= MIN_WZORCOW_MOCY)
+                    & ((wzorce['q90'] - wzorce['q10']) / wzorce['median'] <= MAX_ROZRZUT_MOCY_WZORCA)]
+
+    bez_slow = otomoto['Tokeny'].map(len) == 0
+    kandydaci = otomoto[ma_dane & ~z_wersja & bez_slow].assign(Moc=moc)[klucz + ['Moc']].rename_axis('_idx').reset_index()
+    pary = kandydaci.merge(wzorce, on=klucz)
+    pary = pary[(pary['Moc'] - pary['median']).abs() / pary['median'] <= PROG_DOPASOWANIA_MOCY]
+    # Tylko jednoznaczne dopasowania: jedna wersja w zasięgu tolerancji
+    liczba_wersji = pary.groupby('_idx')['Wersja'].nunique()
+    jednoznaczne = pary[pary['_idx'].isin(liczba_wersji[liczba_wersji == 1].index)].drop_duplicates('_idx').set_index('_idx')['Wersja']
+
+    nowa = otomoto['Wersja'].copy()
+    nowa.loc[jednoznaczne.index] = jednoznaczne
+    return nowa

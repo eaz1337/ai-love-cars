@@ -60,3 +60,59 @@ class TestWersja:
 
     def test_unknown_model_is_base(self):
         assert wersje.wersja({"turbo"}, "audi", "a4", self.slownik) == wersje.WERSJA_PODSTAWOWA
+
+
+class TestUzupelnijWersjeZMocy:
+    def _df(self, wiersze):
+        df = pd.DataFrame(wiersze, columns=["Marka", "Model", "Pojemnosc_L", "Moc_KM", "Wersja", "Paliwo"])
+        df["Tokeny"] = [frozenset()] * len(df)
+        return df
+
+    def _wzorce(self):
+        # trzy ogłoszenia GTS (405 KM) i trzy Turbo (520 KM), ta sama pojemność
+        return [("porsche", "cayenne", 4.8, 405, "gts", "Benzyna")] * 3 + [("porsche", "cayenne", 4.8, 520, "turbo", "Benzyna")] * 3
+
+    def test_assigns_version_from_power(self):
+        df = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, 520, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == "turbo"
+
+    def test_tolerance(self):
+        ok = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, 530, wersje.WERSJA_PODSTAWOWA, "Benzyna")])    # 1,9% od 520
+        za_daleko = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, 560, wersje.WERSJA_PODSTAWOWA, "Benzyna")])  # 7,7%
+        assert wersje.uzupelnij_wersje_z_mocy(ok).iloc[-1] == "turbo"
+        assert wersje.uzupelnij_wersje_z_mocy(za_daleko).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+    def test_ambiguous_match_stays_base(self):
+        wzorce = [("porsche", "cayenne", 4.8, 400, "gts", "Benzyna")] * 3 + [("porsche", "cayenne", 4.8, 408, "s", "Benzyna")] * 3
+        df = self._df(wzorce + [("porsche", "cayenne", 4.8, 404, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+    def test_other_capacity_is_not_matched(self):
+        df = self._df(self._wzorce() + [("porsche", "cayenne", 3.0, 520, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+    def test_too_few_reference_cars(self):
+        df = self._df([("porsche", "cayenne", 4.8, 520, "turbo", "Benzyna")] * 2 + [("porsche", "cayenne", 4.8, 520, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+    def test_missing_power_or_capacity_is_skipped_and_titled_rows_unchanged(self):
+        df = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, None, wersje.WERSJA_PODSTAWOWA, "Benzyna"),
+                                        ("porsche", "cayenne", None, 520, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        wynik = wersje.uzupelnij_wersje_z_mocy(df)
+        assert list(wynik.iloc[-2:]) == [wersje.WERSJA_PODSTAWOWA] * 2
+        assert list(wynik.iloc[:6]) == list(df["Wersja"].iloc[:6])
+
+    def test_other_fuel_is_not_matched(self):
+        df = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, 520, wersje.WERSJA_PODSTAWOWA, "Diesel")])
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+    def test_scattered_power_reference_is_rejected(self):
+        # 'st' to raz 125 KM (ST-Line), raz 250 KM (prawdziwy ST): nie jest jedną wersją, więc nie służy za wzorzec
+        wzorce = [("ford", "focus", 2.0, 125, "st", "Benzyna")] * 3 + [("ford", "focus", 2.0, 250, "st", "Benzyna")] * 3
+        df = self._df(wzorce + [("ford", "focus", 2.0, 125, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+    def test_title_with_unknown_words_is_not_overwritten(self):
+        df = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, 520, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
+        df.at[df.index[-1], "Tokeny"] = frozenset({"prestige"})
+        assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA

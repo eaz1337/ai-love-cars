@@ -21,6 +21,7 @@ Japanese auctions will be added as another source alongside Bidfax, using the sa
 | `scrapers/scraper_otomoto.py` | Scrapes listings from otomoto.pl together with their price history |
 | `analysis/gold.py` | Compares auction prices with Otomoto prices and estimates import profit |
 | `analysis/wersje.py` | Detects the car version (S, GTS, Turbo, 540d...) from titles, used by `gold.py` |
+| `analysis/slownik.py`, `analysis/slownik_wersji.csv` | Manual version dictionary (overrides the learned one) |
 | `tools/sample.py` | Exports random CSV samples from the database to `~/Downloads` |
 | `tests/` | Unit tests, run with `pip install -r requirements-dev.txt && pytest` |
 
@@ -100,7 +101,11 @@ The scripts collect data from third-party websites. Check the terms of service o
 
 ## Versions in the gold layer
 
-`gold.py` groups by make, model, engine size, **version** and year, so Cayenne S, GTS and Turbo are no longer mixed. Bidfax has no engine power, so versions are detected from title words. `wersje.py` learns from Otomoto which words really separate versions (median power differs by 4% or more, or median price by 15% or more) and keeps only words that appear on both sides. Gearbox and drive words (`tiptronic`, `xdrive`, `quattro`) are ignored. A car without such a word falls into the `podstawowa` version. Set `GOLD_WERSJE=0` to go back to the old, coarser groups.
+`gold.py` groups by make, model, engine size, **version** and year, so Cayenne S, GTS and Turbo are no longer mixed. Bidfax has no engine power, so versions are detected from title words. `wersje.py` learns from Otomoto which words really separate versions (median power differs by 4% or more, or median price by 15% or more) and keeps only words that appear on both sides. Gearbox and drive words (`tiptronic`, `xdrive`, `quattro`) are ignored. A car without such a word falls into the `podstawowa` version. Otomoto listings whose title is just make and model (for example a bare "Porsche Cayenne" with 640 hp) get a version from engine power: they take the version of the single reference group with the same model, engine size and fuel and a power within 3%. Bidfax has no power, so this applies to Otomoto only. Set `GOLD_WERSJE=0` to go back to the old, coarser groups.
+
+### Manual version dictionary
+
+`analysis/slownik_wersji.csv` lets you define versions by hand. For models listed there it overrides the learned vocabulary and the power rule. Columns: `marka`, `model` (as in Otomoto, lowercase), `wersja` (label), `slowa` (words that must be in the title), `zakaz_slow` (words that must not be there, for example `line` for a real ST), and optional `moc_od`/`moc_do` (hp) and `pojemnosc_od`/`pojemnosc_do` (litres), used for Otomoto listings with no version in the title. The entry with more words wins, and if two versions match equally nothing is chosen. The file currently contains only a Porsche Cayenne example, to be checked by you. To get a starting draft for all models from your data, run `GOLD_SZKIC_SLOWNIKA=szkic.csv python analysis/gold.py` and copy the entries you trust. `GOLD_SLOWNIK_WERSJI` points to another dictionary file.
 
 Finer groups mean fewer cars per group, so some fall below `MIN_AUKCJI_USA` and `MIN_OGLOSZEN_OTOMOTO`. The more data in the database, the better this works.
 
