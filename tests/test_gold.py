@@ -1,6 +1,7 @@
 import pytest
 
 import gold
+import pandas as pd
 
 
 class TestMapModelDynamic:
@@ -82,3 +83,13 @@ class TestIsHybrid:
     def test_audi_q8_is_hybrid_unless_etron(self):
         assert gold.is_hybrid("Audi Q8 3.0L", "audi", "Q8")
         assert not gold.is_hybrid("Audi Q8 e-tron", "audi", "Q8")
+
+
+class TestOdfiltrujCenyTechniczne:
+    def test_drops_placeholders_and_missing(self):
+        df = pd.DataFrame({"Cena_USD": [1, 2, 25, 99, 100, 5000, None]})
+        assert list(gold.odfiltruj_ceny_techniczne(df)["Cena_USD"]) == [100, 5000]
+
+    def test_custom_threshold(self):
+        df = pd.DataFrame({"Cena_USD": [50, 500]})
+        assert list(gold.odfiltruj_ceny_techniczne(df, min_cena=10)["Cena_USD"]) == [50, 500]

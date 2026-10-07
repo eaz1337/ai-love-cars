@@ -22,6 +22,7 @@ Japanese auctions will be added as another source alongside Bidfax, using the sa
 | `analysis/gold.py` | Compares auction prices with Otomoto prices and estimates import profit |
 | `analysis/wersje.py` | Detects the car version (S, GTS, Turbo, 540d...) from titles, used by `gold.py` |
 | `analysis/slownik.py`, `analysis/slownik_wersji.csv` | Manual version dictionary (overrides the learned one) |
+| `analysis/koszty.py`, `analysis/koszty_transportu.csv` | Land transport cost to the port by auction location |
 | `tools/sample.py` | Exports random CSV samples from the database to `~/Downloads` |
 | `tests/` | Unit tests, run with `pip install -r requirements-dev.txt && pytest` |
 
@@ -108,6 +109,12 @@ The scripts collect data from third-party websites. Check the terms of service o
 `analysis/slownik_wersji.csv` lets you define versions by hand. For models listed there it overrides the learned vocabulary and the power rule. Columns: `marka`, `model` (as in Otomoto, lowercase), `wersja` (label), `slowa` (words that must be in the title), `zakaz_slow` (words that must not be there, for example `line` for a real ST), and optional `moc_od`/`moc_do` (hp) and `pojemnosc_od`/`pojemnosc_do` (litres), used for Otomoto listings with no version in the title. The entry with more words wins, and if two versions match equally nothing is chosen. The file currently contains only a Porsche Cayenne example, to be checked by you. To get a starting draft for all models from your data, run `GOLD_SZKIC_SLOWNIKA=szkic.csv python analysis/gold.py` and copy the entries you trust. `GOLD_SLOWNIK_WERSJI` points to another dictionary file.
 
 Finer groups mean fewer cars per group, so some fall below `MIN_AUKCJI_USA` and `MIN_OGLOSZEN_OTOMOTO`. The more data in the database, the better this works.
+
+## Import costs in the gold layer
+
+Transport to the port depends on where the car stands. `analysis/koszty_transportu.csv` holds the cost of land transport to the port for every US state and Canadian province (`klucz`, `port`, `transport_ladowy_usd`), plus a default row `*` for locations without a state (for example `Dream Rides`). A row can also be keyed by the full lowercase location name. The amounts are **rough estimates to be verified by hand**, not carrier prices. `gold.py` adds the fixed part `KOSZT_FRACHT_I_OPLATY_USD` (ocean freight and auction fees, 1700 USD) to this land transport; on average this gives the old flat 2200 USD. `GOLD_KOSZTY_TRANSPORTU` points to another file.
+
+Bidfax does not say whether a lot was sold, and some lots first show placeholder prices (1, 2 or 25 USD). Auctions below `MIN_CENA_AUKCJI_USD` (100 USD) are dropped before the last sale per VIN is chosen. A lot that was relisted keeps only its last auction. The price of a lot that was not really sold, or was sold "on approval", cannot be detected from Bidfax data.
 
 ## Docker
 

@@ -4,6 +4,7 @@ import re
 import sqlite3
 import os
 
+from koszty import transport_ladowy_usd, wczytaj_koszty
 from slownik import szkic_slownika, wczytaj_slownik, wersja_reczna
 from wersje import WERSJA_PODSTAWOWA, buduj_slownik, tokeny_wersji, uzupelnij_wersje_z_mocy, wersja
 
@@ -11,7 +12,12 @@ from wersje import WERSJA_PODSTAWOWA, buduj_slownik, tokeny_wersji, uzupelnij_we
 # 1. KONFIGURACJA ZMIENNYCH FINANSOWYCH
 # ==========================================
 USD_TO_PLN = 3.55
-KOSZT_TRANSPORT_I_AUKCJA_USD = 2200
+# Stała część: fracht morski i opłaty aukcyjne. Transport lądowy do portu zależy od lokalizacji (koszty_transportu.csv).
+# 1700 + średni transport lądowy ze słownika (ok. 520) daje średnio dawne 2200 USD
+KOSZT_FRACHT_I_OPLATY_USD = 1700
+KOSZTY_TRANSPORTU = os.environ.get('GOLD_KOSZTY_TRANSPORTU', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'koszty_transportu.csv'))
+# Ceny poniżej tego progu to placeholdery (np. 1, 2 i 25 USD przed właściwą ceną), a nie sprzedaż
+MIN_CENA_AUKCJI_USD = 100
 STAWKA_CLA = 0.10
 STAWKA_VAT = 0.19
 OPLATY_PORTOWE_TUMACZENIA_PLN = 2500
@@ -100,6 +106,11 @@ def map_model_dynamic(marka, bidfax_model, otomoto_models_for_brand):
             
     return b_model.split()[0] if b_model else "nieznany"
 
+def odfiltruj_ceny_techniczne(bidfax, min_cena=MIN_CENA_AUKCJI_USD):
+    """Usuwa aukcje z ceną poniżej progu (placeholdery). Robimy to przed wyborem ostatniej sprzedaży na VIN,
+    żeby ostatnia aukcja z placeholderem nie wygrała z wcześniejszą, która ma prawdziwą cenę."""
+    return bidfax[pd.to_numeric(bidfax['Cena_USD'], errors='coerce') >= min_cena]
+
 def udzial_naprawy(damage):
     """Jaką część wartości auta pochłonie naprawa, na podstawie opisu uszkodzenia z Bidfax."""
     tekst = str(damage).lower()
@@ -154,7 +165,10 @@ if __name__ == '__main__':
     # Brak ceny lub rocznika to NULL (nie 0), a brak rocznika złączyłby się z 'Rok_produkcji = 0' z Otomoto.
     bidfax_df['Cena_USD'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce')
     bidfax_df['Rocznik'] = pd.to_numeric(bidfax_df['Rocznik'], errors='coerce')
-    bidfax_df = bidfax_df[(bidfax_df['Cena_USD'] > 0) & (bidfax_df['Rocznik'] > 0)].copy()
+    bidfax_df = bidfax_df[bidfax_df['Rocznik'] > 0]
+    przed = len(bidfax_df)
+    bidfax_df = odfiltruj_ceny_techniczne(bidfax_df).copy()
+    print(f"ℹ️  Pominięto {przed - len(bidfax_df)} aukcji z ceną poniżej {MIN_CENA_AUKCJI_USD} USD (placeholdery lub brak ceny).")
     bidfax_df['Rocznik'] = bidfax_df['Rocznik'].astype(int)
     # To samo auto wystawiane na kolejnych aukcjach (niesprzedane, odsprzedane) liczy się raz: ostatnia sprzedaż
     ma_vin = bidfax_df['VIN'].notna() & (bidfax_df['VIN'] != 'Brak')
@@ -257,8 +271,10 @@ if __name__ == '__main__':
     }).reset_index()
 
     bidfax_df['Cena_Zakupu_USA_PLN'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce') * USD_TO_PLN
-    bidfax_df['Fracht_Morski_Aukcja_PLN'] = KOSZT_TRANSPORT_I_AUKCJA_USD * USD_TO_PLN
-    bidfax_df['Wartosc_Celna_PLN'] = bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Fracht_Morski_Aukcja_PLN']
+    koszty_transportu = wczytaj_koszty(KOSZTY_TRANSPORTU)
+    bidfax_df['Transport_Ladowy_USD'] = bidfax_df['Lokalizacja'].apply(lambda l: transport_ladowy_usd(l, koszty_transportu))
+    bidfax_df['Transport_i_Oplaty_PLN'] = (KOSZT_FRACHT_I_OPLATY_USD + bidfax_df['Transport_Ladowy_USD']) * USD_TO_PLN
+    bidfax_df['Wartosc_Celna_PLN'] = bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Transport_i_Oplaty_PLN']
     bidfax_df['Clo_PLN'] = bidfax_df['Wartosc_Celna_PLN'] * STAWKA_CLA
     bidfax_df['Wartosc_do_Akcyzy_PLN'] = bidfax_df['Wartosc_Celna_PLN'] + bidfax_df['Clo_PLN']
     bidfax_df['Akcyza_PLN'] = bidfax_df['Wartosc_do_Akcyzy_PLN'] * bidfax_df['Stawka_Akcyzy']
@@ -266,7 +282,7 @@ if __name__ == '__main__':
     bidfax_df['VAT_PLN'] = bidfax_df['Wartosc_do_VAT_PLN'] * STAWKA_VAT
     bidfax_df['Udzial_Naprawy'] = bidfax_df['Damage'].apply(udzial_naprawy)
     bidfax_df['Koszt_Import_PLN'] = (
-        bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Fracht_Morski_Aukcja_PLN'] + 
+        bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Transport_i_Oplaty_PLN'] + 
         bidfax_df['Clo_PLN'] + bidfax_df['Akcyza_PLN'] + bidfax_df['VAT_PLN'] + 
         OPLATY_PORTOWE_TUMACZENIA_PLN + TRANSPORT_DO_PL_PLN
     )
