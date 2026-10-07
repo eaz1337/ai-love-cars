@@ -23,6 +23,7 @@ Japanese auctions will be added as another source alongside Bidfax, using the sa
 | `analysis/wersje.py` | Detects the car version (S, GTS, Turbo, 540d...) from titles, used by `gold.py` |
 | `analysis/slownik.py`, `analysis/slownik_wersji.csv` | Manual version dictionary (overrides the learned one) |
 | `analysis/koszty.py`, `analysis/koszty_transportu.csv` | Land transport cost to the port by auction location |
+| `tools/migruj_baze.py`, `tools/migracja.sql` | Backup and one-step migration of an existing database (see `MIGRACJA_BAZY.md`) |
 | `tools/sample.py` | Exports random CSV samples from the database to `~/Downloads` |
 | `tests/` | Unit tests, run with `pip install -r requirements-dev.txt && pytest` |
 

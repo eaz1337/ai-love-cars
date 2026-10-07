@@ -23,7 +23,7 @@ Migracja dodaje od siebie jedną kolumnę, `Data_Startu` (scrapery jej nie używ
    ```
    Skrypty trafiły do folderów `scrapers/`, `analysis/` i `tools/`, więc stare polecenia `python scraper_otomoto.py` już nie zadziałają.
    Przy Dockerze baza leży w `./data/samochody.db`, a polecenia `sqlite3` poniżej uruchamiaj na tym pliku.
-3. Zrób spójną kopię zapasową (baza działa w trybie WAL, samo `cp` w trakcie pracy skryptu może dać niekompletny plik):
+3. Kopię zapasową zrobi skrypt z kroku 2. Jeśli migrujesz ręcznie, zrób spójną kopię sam (baza działa w trybie WAL, samo `cp` w trakcie pracy skryptu może dać niekompletny plik):
    ```bash
    sqlite3 samochody.db ".backup samochody_backup_$(date +%F).db"
    ```
@@ -57,53 +57,40 @@ GROUP BY Marka;
 SELECT SUM(Rocznik = 0), SUM(Cena_USD = 0) FROM bidfax_scd2;
 ```
 
-## 2. Migracja (uruchom JEDEN raz)
+## 2. Migracja
 
-Wszystko w jednej transakcji: albo przejdzie całość, albo nic się nie zmieni.
-Zapisz poniższy blok jako `migracja.sql` i uruchom `sqlite3 -bail samochody.db < migracja.sql`.
-Flaga `-bail` zatrzymuje skrypt na pierwszym błędzie, a otwarta transakcja jest wtedy wycofywana. Bez niej `sqlite3` po błędzie
-wykonuje kolejne polecenia i kończy `COMMIT`.
+Najprościej jednym poleceniem (kopia zapasowa, migracja i kontrola w jednym kroku), z katalogu głównego repo:
 
-```sql
-BEGIN;
-
--- Indeksy, które scraper zakłada przy starcie. Bez nich DELETE z EXISTS poniżej działa bardzo wolno (pełny skan dla każdego wiersza)
-CREATE INDEX IF NOT EXISTS idx_aktualne ON otomoto_scd2 (ID_Ogloszenia, Wazne_Do);
-CREATE INDEX IF NOT EXISTS idx_wazne_status ON otomoto_scd2 (Wazne_Do, Status);
-
--- Bidfax: marka w polu Model dla marek z myślnikiem
-UPDATE bidfax_scd2 SET Model = TRIM(SUBSTR(Model, LENGTH('Mercedes-Benz') + 1))
-WHERE Marka = 'mercedes-benz' AND Model LIKE 'Mercedes-Benz %';
-UPDATE bidfax_scd2 SET Model = TRIM(SUBSTR(Model, LENGTH('Rolls-Royce') + 1))
-WHERE Marka = 'rolls-royce' AND Model LIKE 'Rolls-Royce %';
-
--- Bidfax: jednolity zapis stanu auta
-UPDATE bidfax_scd2 SET Condition = 'Run And Drive' WHERE Condition = 'Run and Drive';
-
--- Bidfax: zera oznaczają brak danych (nowy scraper zapisuje NULL)
-UPDATE bidfax_scd2 SET Rocznik = NULL WHERE Rocznik = 0;
-UPDATE bidfax_scd2 SET Cena_USD = NULL WHERE Cena_USD = 0;
-
--- Otomoto: usuń fałszywe zakończenia (ogłoszenie zamknięte przez niepełny skan, które potem wróciło).
--- Prawdziwe zakończenia (bez późniejszego wiersza 'Aktywne') zostają.
-DELETE FROM otomoto_scd2
-WHERE Status = 'Zakończone'
-  AND EXISTS (SELECT 1 FROM otomoto_scd2 a
-              WHERE a.ID_Ogloszenia = otomoto_scd2.ID_Ogloszenia
-                AND a.Status = 'Aktywne' AND a.Wazne_Od > otomoto_scd2.Wazne_Od);
-
--- Otomoto: realna data startu ogłoszenia (wcześniejsze skany nie sięgały daleko, więc Data_Dodania bywa za późna)
-ALTER TABLE otomoto_scd2 ADD COLUMN Data_Startu TEXT;
-UPDATE otomoto_scd2
-SET Data_Startu = MIN(Data_Dodania, REPLACE(SUBSTR(Czas_publikacji, 1, 19), 'T', ' '))
-WHERE Czas_publikacji IS NOT NULL;
-
-COMMIT;
+```bash
+python tools/migruj_baze.py --dry-run     # najpierw próba na kopii, oryginał zostaje nietknięty
+python tools/migruj_baze.py               # prawdziwa migracja (pyta o potwierdzenie, --tak pomija pytanie)
 ```
 
+W Dockerze: `docker compose run --rm gold python /app/tools/migruj_baze.py` (baza z `./data`).
+Opcje: `--db ścieżka` (domyślnie `samochody.db` albo zmienna `SAMOCHODY_DB`), `--vacuum` (zmniejsza plik po migracji, wolniejsze).
+
+Skrypt:
+- odmawia pracy, gdy baza jest zajęta (scrapery działają), brakuje tabel albo miejsca na dysku (potrzeba ok. 2,5x rozmiaru bazy),
+- robi spójną kopię `samochody_backup_RRRR-MM-DD_GGMMSS.db` obok bazy (działa też w trybie WAL) i sprawdza jej integralność,
+- pokazuje diagnostykę przed i po (odpowiednik kroku 1),
+- wykonuje `tools/migracja.sql` w jednej transakcji: albo przejdzie całość, albo nic się nie zmieni,
+- sprawdza `integrity_check` i podaje, jak przywrócić kopię.
+
+Można go uruchamiać wielokrotnie: kolejne przebiegi nic nie zmieniają, ale każdy robi nową kopię zapasową, więc usuwaj stare.
+Na bazie z ok. 275 tys. wierszy Otomoto i 104 tys. Bidfax (680 MB) trwa to kilkanaście sekund.
+
+Co robi `tools/migracja.sql` (pełny SQL jest w tym pliku, można go też uruchomić ręcznie: `sqlite3 -bail samochody.db < tools/migracja.sql`;
+flaga `-bail` zatrzymuje skrypt na pierwszym błędzie, a otwarta transakcja jest wtedy wycofywana):
+- zakłada indeksy `idx_aktualne` i `idx_wazne_status` (bez nich usuwanie fałszywych zamknięć jest bardzo wolne),
+- usuwa z `Model` w Bidfax nazwę marki dla Mercedes-Benz i Rolls-Royce,
+- ujednolica `Run and Drive` do `Run And Drive`,
+- zamienia zera w `Rocznik` i `Cena_USD` na `NULL`,
+- usuwa fałszywe zakończenia w Otomoto (zamknięte przez niepełny skan, a potem znów aktywne; prawdziwe zakończenia zostają),
+- dodaje kolumnę `Data_Startu` (wcześniejsza z `Data_Dodania` i `Czas_publikacji`).
+
 Uwagi:
-- `ALTER TABLE ... ADD COLUMN Data_Startu` zgłosi błąd `duplicate column name` przy drugim uruchomieniu. Z flagą `-bail` nic wtedy się nie zmieni. Jeśli chcesz powtórzyć resztę, usuń linię z `ALTER TABLE`; pozostałe polecenia można bezpiecznie uruchamiać wielokrotnie.
-- Opcjonalnie po `DELETE` uruchom `VACUUM;`, żeby plik się zmniejszył.
+- Przy ręcznym uruchomieniu SQL-a `ALTER TABLE ... ADD COLUMN Data_Startu` zgłosi błąd `duplicate column name` przy drugim razie (z `-bail` nic się wtedy nie zmieni). Skrypt `migruj_baze.py` sam pomija tę linię, gdy kolumna już jest.
+- Po usunięciu wierszy plik się nie zmniejsza sam. Użyj `--vacuum` albo ręcznie `VACUUM;`.
 - **Nie kasuj** wierszy z `Ilosc_Powtorzen >= 5`. To prawdopodobnie różne auta zlane w jedno przez stary kod. Historii ID i cen nie da się odtworzyć, więc takie wiersze po prostu wyłączaj z analiz (patrz niżej).
 
 ## 3. Po migracji
