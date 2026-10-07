@@ -1,18 +1,28 @@
 # Migracja bazy `samochody.db` po poprawkach scraperów i `gold.py`
 
 Ten plik opisuje, co zrobić z już zebranymi danymi (ok. miesiąc scrapowania), żeby pasowały do nowej wersji kodu.
+
+Warstwy danych w bazie:
+- **silver**: tabele `bidfax_scd2` i `otomoto_scd2`, wypełniane przez scrapery. **Tylko je migrujemy** (kroki 1-3).
+- **gold**: tabela `analiza_rentownosci_usa`, liczona przez `analysis/gold.py`. Nie migrujesz jej, tylko przeliczasz od nowa
+  (krok 4). Każde uruchomienie kasuje ją i tworzy na nowo.
 Liczby podane w nawiasach pochodzą z losowej próbki 20 000 + 20 000 wierszy. Na pełnej bazie będą większe.
 
-Struktura tabel **nie jest psuta**: nowy kod tylko dodaje kolumnę `Proby_Detali` i indeks `idx_wazne_status`
+Struktura tabel silver **nie jest psuta**: nowy kod tylko dodaje kolumnę `Proby_Detali` i indeks `idx_wazne_status`
 w `otomoto_scd2` (robi to sam przy pierwszym uruchomieniu). Stare wersje skryptów nadal by działały na takiej bazie.
+Migracja dodaje od siebie jedną kolumnę, `Data_Startu` (scrapery jej nie używają, służy do analiz).
 
 ## 0. Przygotowanie
 
-1. Zatrzymaj `scraper_bidfax.py` i `scraper_otomoto.py` (nie mogą pisać do bazy w trakcie migracji).
-2. Zaktualizuj kod na komputerze, na którym leży baza:
+1. Zatrzymaj `scrapers/scraper_bidfax.py` i `scrapers/scraper_otomoto.py` (nie mogą pisać do bazy w trakcie migracji).
+   W Dockerze: `docker compose stop`.
+2. Zaktualizuj kod na komputerze, na którym leży baza (w Dockerze dodatkowo przebuduj obraz):
    ```bash
    cd ai-love-cars && git pull
+   docker compose build   # tylko w Dockerze
    ```
+   Skrypty trafiły do folderów `scrapers/`, `analysis/` i `tools/`, więc stare polecenia `python scraper_otomoto.py` już nie zadziałają.
+   Przy Dockerze baza leży w `./data/samochody.db`, a polecenia `sqlite3` poniżej uruchamiaj na tym pliku.
 3. Zrób spójną kopię zapasową (baza działa w trybie WAL, samo `cp` w trakcie pracy skryptu może dać niekompletny plik):
    ```bash
    sqlite3 samochody.db ".backup samochody_backup_$(date +%F).db"
@@ -57,6 +67,10 @@ wykonuje kolejne polecenia i kończy `COMMIT`.
 ```sql
 BEGIN;
 
+-- Indeksy, które scraper zakłada przy starcie. Bez nich DELETE z EXISTS poniżej działa bardzo wolno (pełny skan dla każdego wiersza)
+CREATE INDEX IF NOT EXISTS idx_aktualne ON otomoto_scd2 (ID_Ogloszenia, Wazne_Do);
+CREATE INDEX IF NOT EXISTS idx_wazne_status ON otomoto_scd2 (Wazne_Do, Status);
+
 -- Bidfax: marka w polu Model dla marek z myślnikiem
 UPDATE bidfax_scd2 SET Model = TRIM(SUBSTR(Model, LENGTH('Mercedes-Benz') + 1))
 WHERE Marka = 'mercedes-benz' AND Model LIKE 'Mercedes-Benz %';
@@ -99,12 +113,30 @@ Uwagi:
    ```sql
    PRAGMA integrity_check;
    ```
-3. Uruchom scrapery jak zwykle (`python scraper_bidfax.py`, `python scraper_otomoto.py`). Przy pierwszym przebiegu Otomoto
+3. Uruchom scrapery jak zwykle (`python scrapers/scraper_bidfax.py`, `python scrapers/scraper_otomoto.py`,
+   w Dockerze `docker compose run --rm bidfax` i `docker compose run --rm otomoto`). Przy pierwszym przebiegu Otomoto
    zobaczysz w logu `Widzianych w tym skanie` i ewentualnie `Pomijam zamykanie ogłoszeń`. To bezpiecznik, który nie zamyka
    ogłoszeń po niepełnym skanie (patrz README).
-4. Przelicz analizę: `SAMOCHODY_DB=samochody.db python gold.py` (ścieżkę do bazy bierze ze zmiennej, domyślnie `samochody.db`).
 
-## 4. Zasady przy analizie starych danych
+## 4. Przeliczenie warstwy gold
+
+```bash
+SAMOCHODY_DB=samochody.db python analysis/gold.py     # w Dockerze: docker compose run --rm gold
+```
+
+Ścieżkę do bazy skrypt bierze ze zmiennej `SAMOCHODY_DB` (domyślnie `samochody.db` w bieżącym katalogu).
+Tabela `analiza_rentownosci_usa` jest przy tym kasowana i tworzona od nowa. Czego się spodziewać:
+
+- **Nowa kolumna `Wersja`** (np. `gts`, `turbo gt`, `540i`, a gdy nie rozpoznano: `podstawowa`). Grupy są teraz po marce, modelu,
+  pojemności, wersji i roczniku, więc zapytania zakładające stary układ kolumn trzeba poprawić. Opis w README, sekcja
+  *Versions in the gold layer*.
+- **Mniej grup niż wcześniej.** Drobniejsze grupy częściej nie przechodzą progów (`MIN_AUKCJI_USA` i `MIN_OGLOSZEN_OTOMOTO`, po 3).
+  Żeby porównać z poprzednim układem, uruchom z `GOLD_WERSJE=0`.
+- **Inny koszt naprawy.** Jest liczony jako udział w cenie rynkowej zależny od typu uszkodzenia (z minimum 3000 zł), a nie stała kwota.
+  Marże będą się różnić od wyników sprzed zmiany.
+- Skrypt kończy się komunikatem `Zapisano N grup ... (marża ujemna: M)`. Jeśli bazy nie znajdzie, wychodzi z błędem.
+
+## 5. Zasady przy analizie starych danych
 
 - **Czas na rynku** licz z `Data_Startu` (nie z `Data_Dodania`): `Data_Ostatniego_Widzenia − Data_Startu`.
   `Czas_publikacji` może być odświeżany przez sprzedającego, więc wynik jest przybliżony.
@@ -115,7 +147,7 @@ Uwagi:
 - **Bidfax:** ten sam VIN może mieć kilka aukcji (578 powtórzonych VIN-ów w próbce). Dedupuj po VIN i dacie sprzedaży.
   Przebieg `0 miles (Not Actual)` (ok. 12% aut) to w praktyce brak przebiegu.
 
-## 5. Wycofanie zmian
+## 6. Wycofanie zmian
 
 Jeśli coś pójdzie nie tak, zatrzymaj skrypty i przywróć kopię:
 

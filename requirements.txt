@@ -1,0 +1,6 @@
+beautifulsoup4
+lxml
+DrissionPage
+curl_cffi
+pandas
+numpy

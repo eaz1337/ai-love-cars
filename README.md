@@ -17,8 +17,12 @@ Japanese auctions will be added as another source alongside Bidfax, using the sa
 
 | File | Purpose |
 |---|---|
-| `scraper_bidfax.py` | Scrapes finished Copart and IAAI auctions from en.bidfax.info |
-| `scraper_otomoto.py` | Scrapes listings from otomoto.pl together with their price history |
+| `scrapers/scraper_bidfax.py` | Scrapes finished Copart and IAAI auctions from en.bidfax.info |
+| `scrapers/scraper_otomoto.py` | Scrapes listings from otomoto.pl together with their price history |
+| `analysis/gold.py` | Compares auction prices with Otomoto prices and estimates import profit |
+| `analysis/wersje.py` | Detects the car version (S, GTS, Turbo, 540d...) from titles, used by `gold.py` |
+| `tools/sample.py` | Exports random CSV samples from the database to `~/Downloads` |
+| `tests/` | Unit tests, run with `pip install -r requirements-dev.txt && pytest` |
 
 Both scripts write to the same SQLite file, `samochody.db` (tables `bidfax_scd2` and `otomoto_scd2`), so the data can be joined by make, model and year.
 
@@ -57,8 +61,8 @@ pip install beautifulsoup4 lxml DrissionPage curl_cffi
 ## Usage
 
 ```bash
-python scraper_bidfax.py
-python scraper_otomoto.py
+python scrapers/scraper_bidfax.py
+python scrapers/scraper_otomoto.py
 ```
 
 Both scripts can be run daily. Subsequent runs only add new records and update changes, so the database grows incrementally.
@@ -93,3 +97,22 @@ Fetching lots scheduled for today together with their full description and photo
 
 The scripts collect data from third-party websites. Check the terms of service of Bidfax and Otomoto before use and keep request rates reasonable. Otomoto data includes seller information, so do not publish or share it further.
 
+
+## Versions in the gold layer
+
+`gold.py` groups by make, model, engine size, **version** and year, so Cayenne S, GTS and Turbo are no longer mixed. Bidfax has no engine power, so versions are detected from title words. `wersje.py` learns from Otomoto which words really separate versions (median power differs by 4% or more, or median price by 15% or more) and keeps only words that appear on both sides. Gearbox and drive words (`tiptronic`, `xdrive`, `quattro`) are ignored. A car without such a word falls into the `podstawowa` version. Set `GOLD_WERSJE=0` to go back to the old, coarser groups.
+
+Finer groups mean fewer cars per group, so some fall below `MIN_AUKCJI_USA` and `MIN_OGLOSZEN_OTOMOTO`. The more data in the database, the better this works.
+
+## Docker
+
+Obraz zawiera Pythona, Chrome (dla Bidfax) i zależności. Baza trafia do `./data/samochody.db`.
+
+```bash
+docker compose run --rm otomoto      # scraper Otomoto
+docker compose run --rm bidfax       # scraper Bidfax (Chrome startuje sam, na Xvfb)
+docker compose run --rm gold         # analiza
+docker compose run --rm test         # testy
+```
+
+Chrome w obrazie jest tylko dla amd64. NordVPN w kontenerze nie działa, więc rotacja IP w Otomoto jest pomijana.

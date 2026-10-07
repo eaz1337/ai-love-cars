@@ -1,0 +1,10 @@
+.git
+data
+venv
+__pycache__
+*.pyc
+*.db*
+*_sample.csv
+czysty_profil_bidfax
+drission-profile
+.env

@@ -1,0 +1,25 @@
+# Wszystkie usługi współdzielą bazę w ./data/samochody.db
+services:
+  otomoto:
+    build: .
+    volumes: ["./data:/data"]
+    command: ["python", "/app/scrapers/scraper_otomoto.py"]
+
+  bidfax:
+    build: .
+    volumes: ["./data:/data"]
+    shm_size: 1gb
+    command: ["bidfax-entrypoint.sh"]
+
+  gold:
+    build: .
+    volumes: ["./data:/data"]
+    environment:
+      SAMOCHODY_DB: /data/samochody.db
+    command: ["python", "/app/analysis/gold.py"]
+
+  test:
+    build: .
+    working_dir: /app
+    command: ["pytest", "-q"]
+    profiles: ["test"]
