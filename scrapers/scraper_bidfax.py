@@ -92,6 +92,18 @@ def wstaw_ogloszenia_hurtowo(conn, auta):
         logging.error(f"Błąd podczas zapisu do bazy: {e}")
         return 0
 
+def policz_nowe_linki(conn, auta):
+    """Ile ogłoszeń z listy nie ma jeszcze w bazie (po Link). Aktualizacje znanych rekordów się nie liczą."""
+    linki = list({car['Link'] for car in auta})
+    if not linki:
+        return 0
+    znane = set()
+    for i in range(0, len(linki), 500):
+        paczka = linki[i:i + 500]
+        zapytanie = f"SELECT Link FROM bidfax_scd2 WHERE Link IN ({','.join('?' * len(paczka))})"
+        znane.update(r[0] for r in conn.execute(zapytanie, paczka))
+    return len(linki) - len(znane)
+
 def usun_stare_rekordy(conn):
     try:
         cursor = conn.cursor()
@@ -322,15 +334,18 @@ def main():
 
                     auta_do_bazy.append(auto)
 
+                # Stop decyduje o nowych linkach, a nie o zmianach: cena/stan znanych aut potrafią się zmieniać
+                # na każdej stronie i wtedy "baza aktualna" nigdy by nie zadziałało
+                nowe = policz_nowe_linki(conn, auta_do_bazy)
                 faktycznie_zapisane = wstaw_ogloszenia_hurtowo(conn, auta_do_bazy) if auta_do_bazy else 0
                 czas_wyk = time.time() - start_time
 
-                logging.info(f"[{marka.upper()}-S{aktualna_strona}] Zapisano: {faktycznie_zapisane} | (Czas: {czas_wyk:.1f}s)")
+                logging.info(f"[{marka.upper()}-S{aktualna_strona}] Zapisano: {faktycznie_zapisane} (nowe: {nowe}) | (Czas: {czas_wyk:.1f}s)")
 
-                if auta_do_bazy and faktycznie_zapisane == 0:
+                if auta_do_bazy and nowe == 0:
                     puste_strony_pod_rzad += 1
                     if puste_strony_pod_rzad >= 3:
-                        logging.info(f"🛑 Baza aktualna (3 strony samych duplikatów). Przechodzę do następnej marki.")
+                        logging.info(f"🛑 Baza aktualna (3 strony bez nowych aut). Przechodzę do następnej marki.")
                         break
                 else:
                     puste_strony_pod_rzad = 0
