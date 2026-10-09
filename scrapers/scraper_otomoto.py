@@ -11,6 +11,7 @@ import threading
 import bs4
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
+from marki import MARKI_OTOMOTO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==============================================================================
@@ -22,13 +23,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-WYBRANE_MARKI = [
-    "alfa-romeo", "alpina", "alpine", "aston-martin", "audi", "bentley",
-    "bmw", "cadillac", "chevrolet", "chrysler", "dodge", "ferrari", "ford",
-    "honda", "hyundai", "infiniti", "jaguar", "jeep", "kia", "lamborghini",
-    "land-rover", "lexus", "lotus", "maserati", "mclaren", "mercedes-benz",
-    "mitsubishi", "nissan", "porsche", "rolls-royce"
-]
+WYBRANE_MARKI = MARKI_OTOMOTO  # wspólna lista z Bidfax: scrapers/marki.py
 
 def generuj_url_otomoto(marki):
     sciezka = "--".join(marki)
@@ -65,10 +60,12 @@ MAX_WORKERS_FAZA_2 = 8
 STRON_W_PACZCE = 20  
 MAX_STRON = 4000
 MAX_PROB_NA_STRONE = 3
+PUSTYCH_STRON_KONIEC = 3     # tyle pustych stron z rzędu uznajemy za koniec wyników (jedna pusta może być chwilową blokadą)
 LIMIT_FAZY_2 = 500  
 NIESKONCZONOSC = '9999-12-31 23:59:59'
 DNI_PAMIECI_ZAMKNIETYCH = 60   # jak długo pamiętamy zamknięte ID, żeby rozpoznać ich powrót
 MAX_PROB_DETALI = 3          # tyle razy faza 2 próbuje pobrać detale ogłoszenia, potem odpuszcza
+MIN_POKRYCIE_TOTALCOUNT = 0.95   # bezpiecznik: zebrane ogłoszenia muszą stanowić min. 95% 'totalCount' zadeklarowanego przez Otomoto
 MAX_ZAMKNIEC_PROC = 0.30     # bezpiecznik: nie zamykamy naraz więcej niż 30% aktywnych ogłoszeń
 MIN_AKTYWNYCH_DLA_BEZPIECZNIKA = 50
 
@@ -177,11 +174,14 @@ def bezpeiczny_soup(html_content):
     try: return BeautifulSoup(html_content, 'lxml')
     except bs4.FeatureNotFound: return BeautifulSoup(html_content, 'html.parser')
 
-def parse_otomoto_json(html_content):
+def parse_otomoto_strone(html_content):
+    """Zwraca (oferty, totalCount). totalCount to liczba wyników całego wyszukiwania zadeklarowana przez Otomoto,
+    albo None, gdy strony nie da się odczytać lub pola nie ma."""
     cars = []
+    total = None
     soup = bezpeiczny_soup(html_content)
     script_tag = soup.find('script', id='__NEXT_DATA__')
-    if not script_tag: return cars
+    if not script_tag: return cars, total
     try:
         data = json.loads(script_tag.string)
         urql_state = data.get("props", {}).get("pageProps", {}).get("urqlState", {})
@@ -191,13 +191,27 @@ def parse_otomoto_json(html_content):
                 inner_data = json.loads(value.get("data", "{}"))
                 advert_search = inner_data.get("advertSearch")
                 if not advert_search: continue
+                if total is None and isinstance(advert_search.get("totalCount"), int):
+                    total = advert_search["totalCount"]
                 for edge in advert_search.get("edges", []):
                     node = edge.get("node")
                     if node: cars.append(node)
             except Exception: continue
     except Exception as e:
         logging.error(f"Krytyczny błąd parsowania JSON (Faza 1): {e}")
-    return cars
+    return cars, total
+
+def parse_otomoto_json(html_content):
+    return parse_otomoto_strone(html_content)[0]
+
+def za_male_pokrycie(widziane, total):
+    """Powód (tekst), jeśli zebraliśmy wyraźnie mniej ogłoszeń, niż deklaruje Otomoto; inaczej None.
+    Brak totalCount (None) nie blokuje, bo wtedy działają pozostałe bezpieczniki."""
+    if not total:
+        return None
+    if widziane < MIN_POKRYCIE_TOTALCOUNT * total:
+        return f"zebrano {widziane} z {total} ogłoszeń zadeklarowanych przez Otomoto ({widziane / total:.0%}, wymagane {MIN_POKRYCIE_TOTALCOUNT:.0%})"
+    return None
 
 def wyciagnij_dane_ogloszenia(car):
     seller = car.get("seller")
@@ -302,13 +316,13 @@ def pobierz_strone_cffi(url, page_num):
         try:
             response = session.get(url, timeout=15)
             if response.status_code == 200:
-                cars = parse_otomoto_json(response.text)
+                cars, total = parse_otomoto_strone(response.text)
                 if not cars and "cloudflare" in response.text.lower():
                     logging.warning(f"Strona {page_num}: Zatrzymane przez Cloudflare (Próba {proba}).")
                     dodaj_blokade()
                     rotuj_nordvpn_system()
                 else:
-                    return page_num, cars
+                    return page_num, cars, total
             elif response.status_code in (403, 429):
                 logging.warning(f"Strona {page_num}: BLOKADA ({response.status_code}) (Próba {proba}).")
                 dodaj_blokade()
@@ -316,7 +330,7 @@ def pobierz_strone_cffi(url, page_num):
         except Exception as e:
             logging.debug(f"Cichy błąd HTTP dla strony {page_num}: {e}")
         time.sleep(3 * proba)
-    return page_num, None
+    return page_num, None, None
 
 def wstaw_nowy_rekord(cursor, car):
     cursor.execute("""
@@ -429,6 +443,20 @@ def zapisz_paczke_do_bazy(conn, paczka, dzisiaj, stats, mem_db):
 
     conn.commit()
 
+def sprawdz_koniec_wynikow(strony, seria_pustych):
+    """Czy skan doszedł do końca? `strony` to {nr_strony: lista ofert albo None dla nieudanej}. Koniec to PUSTYCH_STRON_KONIEC
+    pustych stron z rzędu (liczone po kolei, więc kolejność kończenia wątków nie ma znaczenia). Strona nieudana przerywa serię,
+    bo nie wiemy, co na niej było. Zwraca (nowa seria, czy koniec); serię przenosimy między paczkami."""
+    for nr in sorted(strony):
+        oferty = strony[nr]
+        if oferty is None or oferty:
+            seria_pustych = 0
+        else:
+            seria_pustych += 1
+            if seria_pustych >= PUSTYCH_STRON_KONIEC:
+                return seria_pustych, True
+    return seria_pustych, False
+
 def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
     nazwa_kategorii = konfiguracja["nazwa"]
     base_url = konfiguracja["url_bazowy"]
@@ -444,6 +472,8 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
     aktualna_strona = 1
     koniec_wynikow = False
     nieudane_strony = []
+    seria_pustych = 0
+    deklarowane_total = None
     aktywne_przed = len(mem_db["ids"])
 
     while aktualna_strona <= MAX_STRON and not koniec_wynikow:
@@ -456,15 +486,18 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
                 url = f"{base_url}&page={p}"
                 futures[executor.submit(pobierz_strone_cffi, url, p)] = p
             
+            wyniki_paczki = {}
             for future in as_completed(futures):
-                page_num, cars_on_page = future.result()
+                page_num, cars_on_page, total = future.result()
+                wyniki_paczki[page_num] = cars_on_page
+                if total and (deklarowane_total is None or total > deklarowane_total):
+                    deklarowane_total = total
                 if cars_on_page is None:
                     logging.warning(f"Strona {page_num}: nie udało się pobrać po {MAX_PROB_NA_STRONE} próbach.")
                     nieudane_strony.append(page_num)
                     continue
                 if not cars_on_page:
                     logging.info(f"Strona {page_num} jest pusta.")
-                    koniec_wynikow = True
                     continue
 
                 for car in cars_on_page:
@@ -472,6 +505,8 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
                     if car_id in seen_in_this_run: continue
                     paczka_buffer.append(wyciagnij_dane_ogloszenia(car))
                     seen_in_this_run.add(car_id)
+
+        seria_pustych, koniec_wynikow = sprawdz_koniec_wynikow(wyniki_paczki, seria_pustych)
 
         if paczka_buffer:
             zapisz_paczke_do_bazy(conn, paczka_buffer, dzisiaj, stats, mem_db)
@@ -498,6 +533,8 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
         powod_pominiecia = f"skan nie dotarł do końca wyników (limit {MAX_STRON} stron)"
     elif not seen_in_this_run:
         powod_pominiecia = "skan nie zwrócił żadnych ogłoszeń (blokada lub zmiana struktury strony?)"
+    elif za_male_pokrycie(len(seen_in_this_run), deklarowane_total):
+        powod_pominiecia = za_male_pokrycie(len(seen_in_this_run), deklarowane_total)
     elif aktywne_przed >= MIN_AKTYWNYCH_DLA_BEZPIECZNIKA and do_zamkniecia > MAX_ZAMKNIEC_PROC * aktywne_przed:
         powod_pominiecia = (f"do zamknięcia {do_zamkniecia} z {aktywne_przed} aktywnych "
                             f"(> {MAX_ZAMKNIEC_PROC:.0%}), to wygląda na niepełny skan")
@@ -537,7 +574,7 @@ def skanuj_kategorie_wielowatkowo(konfiguracja, conn):
     logging.info(f" -> Nowe auta: {stats['otwarte']}")
     logging.info(f" -> Ilość powtórzonych wystawień (Klony): {stats['wykryte_klony']}")
     logging.info(f" -> Wznowione ID (wróciły po zamknięciu): {stats['wznowione']}")
-    logging.info(f" -> Widzianych w tym skanie: {len(seen_in_this_run)} (aktywnych przed skanem: {aktywne_przed})")
+    logging.info(f" -> Widzianych w tym skanie: {len(seen_in_this_run)} (aktywnych przed skanem: {aktywne_przed}, totalCount Otomoto: {deklarowane_total})")
     logging.info(f" -> Zmiany cen (SCD2): {stats['zmiana_ceny']}")
     logging.info(f" -> Ogłoszenia Zakończone: {zamkniete_ogloszenia}")
     logging.info(f" -> Aktualnie aktywnych w bazie: {len(mem_db['ids'])}")
@@ -649,6 +686,12 @@ def pobierz_detale_z_linku(url):
         time.sleep(3 * proba)
     return None
 
+def detale_maja_dane(detale):
+    """False dla None, {} i słownika z samymi pustymi wartościami. Strona z kodem 200, z której nic nie wyparsowano
+    (zgoda na cookies, challenge, zmiana układu), to nieudana próba, a nie pobrane detale."""
+    return bool(detale) and any(normalize_nulls(detale.get(k)) for k in
+                                ("bezwypadkowy", "pierwszy_wlasciciel", "uszkodzony", "opis", "sprzedawca_od", "nazwa_sprzedawcy"))
+
 def faza_2_uzupelnij_detale(conn):
     dzisiaj = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -692,7 +735,7 @@ def faza_2_uzupelnij_detale(conn):
                     """, (dzisiaj, car_id, NIESKONCZONOSC))
                     wygasle += 1
                 
-                elif detale is not None:
+                elif detale_maja_dane(detale):
                     nowy_b = normalize_nulls(detale.get("bezwypadkowy"))
                     nowy_p = normalize_nulls(detale.get("pierwszy_wlasciciel"))
                     nowy_u = normalize_nulls(detale.get("uszkodzony"))

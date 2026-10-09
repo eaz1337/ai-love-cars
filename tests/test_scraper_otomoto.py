@@ -142,3 +142,64 @@ class TestBaza:
         conn.close()
         conn = om.zainicjalizuj_baze()
         assert conn.execute("SELECT Opis, Detale_Pobrane FROM otomoto_scd2").fetchone() == (None, 0)
+
+
+class TestSprawdzKoniecWynikow:
+    def test_jedna_pusta_strona_to_nie_koniec(self):
+        seria, koniec = om.sprawdz_koniec_wynikow({1: [{"id": 1}], 2: [], 3: [{"id": 2}]}, 0)
+        assert (seria, koniec) == (0, False)
+
+    def test_kilka_pustych_z_rzedu_konczy(self):
+        strony = {1: [{"id": 1}], 2: [], 3: [], 4: []}
+        assert om.sprawdz_koniec_wynikow(strony, 0)[1] is True
+
+    def test_kolejnosc_kluczy_nie_ma_znaczenia(self):
+        strony = {4: [], 2: [], 1: [{"id": 1}], 3: []}
+        assert om.sprawdz_koniec_wynikow(strony, 0)[1] is True
+
+    def test_nieudana_strona_przerywa_serie(self):
+        strony = {1: [], 2: None, 3: [], 4: []}
+        assert om.sprawdz_koniec_wynikow(strony, 0) == (2, False)
+
+    def test_seria_przechodzi_miedzy_paczkami(self):
+        seria, koniec = om.sprawdz_koniec_wynikow({19: [], 20: []}, 0)
+        assert (seria, koniec) == (2, False)
+        assert om.sprawdz_koniec_wynikow({21: []}, seria)[1] is True
+
+
+class TestDetaleMajaDane:
+    @pytest.mark.parametrize("detale", [None, {}, {"opis": None}, {"opis": "  ", "bezwypadkowy": "brak"}])
+    def test_puste_to_nieudana_proba(self, detale):
+        assert om.detale_maja_dane(detale) is False
+
+    def test_jedno_pole_wystarczy(self):
+        assert om.detale_maja_dane({"bezwypadkowy": "Tak"}) is True
+
+
+class TestZaMalePokrycie:
+    def test_pelne_pokrycie_ok(self):
+        assert om.za_male_pokrycie(1000, 1000) is None
+
+    def test_drobna_roznica_ok(self):
+        assert om.za_male_pokrycie(960, 1000) is None
+
+    def test_duza_roznica_blokuje(self):
+        assert "900 z 1000" in om.za_male_pokrycie(900, 1000)
+
+    def test_wiecej_niz_deklarowane_ok(self):
+        assert om.za_male_pokrycie(1100, 1000) is None
+
+    @pytest.mark.parametrize("total", [None, 0])
+    def test_brak_totalcount_nie_blokuje(self, total):
+        assert om.za_male_pokrycie(10, total) is None
+
+
+class TestParseOtomotoStrona:
+    def test_total_count(self):
+        data = {"props": {"pageProps": {"urqlState": {"k": {"data": json.dumps(
+            {"advertSearch": {"totalCount": 1234, "edges": [{"node": {"id": 1}}]}})}}}}}
+        html = f'<script id="__NEXT_DATA__">{json.dumps(data)}</script>'
+        assert om.parse_otomoto_strone(html) == ([{"id": 1}], 1234)
+
+    def test_brak_strony(self):
+        assert om.parse_otomoto_strone("<html></html>") == ([], None)

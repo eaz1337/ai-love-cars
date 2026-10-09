@@ -20,6 +20,9 @@ KOSZTY_TRANSPORTU = os.environ.get('GOLD_KOSZTY_TRANSPORTU', os.path.join(os.pat
 MIN_CENA_AUKCJI_USD = 100
 STAWKA_CLA = 0.10
 STAWKA_VAT = 0.19
+STAWKA_AKCYZY_ELEKTRYCZNE = 0.0   # auta elektryczne są zwolnione z akcyzy
+# Auta elektryczne nie mają pojemności silnika. Żeby nie wypadały z grupowania (NaN w kluczu), dostają pojemność 0.0
+POJEMNOSC_ELEKTRYCZNE_L = 0.0
 OPLATY_PORTOWE_TUMACZENIA_PLN = 2500
 TRANSPORT_DO_PL_PLN = 1800
 
@@ -62,6 +65,14 @@ US_EU_ALIASES = {
     'nissan': {'rogue': 'x-trail', 'rogue sport': 'qashqai'},
     'volkswagen': {'jetta': 'jetta', 'passat': 'passat'}
 }
+
+# Bidfax podaje slug z URL-a ('land-rover'), Otomoto nazwę wyświetlaną ('Land Rover'). Wspólna postać: małe litery, myślniki
+ALIASY_MAREK = {'mclaren-automotive': 'mclaren'}
+
+def normalizuj_marke(marka):
+    """'Land Rover' / 'land-rover' -> 'land-rover', 'mclaren-automotive' -> 'mclaren'."""
+    slug = re.sub(r'[\s\-]+', '-', str(marka).strip().lower())
+    return ALIASY_MAREK.get(slug, slug)
 
 def _slowo_w_tekscie(szukane, tekst):
     """True, jeśli `szukane` występuje w `tekst` jako osobne słowo (np. 'rogue' w 'rogue sv', ale nie 'e' w 'escape')."""
@@ -132,6 +143,16 @@ def extract_capacity_otomoto(cm3):
     except:
         return None
 
+ELEKTRYCZNE_MARKI = {'tesla', 'lucid', 'polestar'}
+ELEKTRYCZNE_SLOWA = re.compile(r'\b(e-tron|electric|taycan|ioniq|ev6|ev9|mach-e|leaf|id\.\s?[3-7])\b', re.IGNORECASE)
+
+def is_electric(title, marka, pojemnosc_l):
+    """Bidfax nie podaje paliwa. Auto z pojemnością w tytule ma silnik spalinowy ('A3 E-Tron 1.4L' to hybryda plug-in),
+    więc elektryczne rozpoznajemy tylko wtedy, gdy pojemności brak, po marce albo słowach typu 'e-tron', 'ioniq'."""
+    if pojemnosc_l is not None and not pd.isna(pojemnosc_l):
+        return False
+    return marka in ELEKTRYCZNE_MARKI or ELEKTRYCZNE_SLOWA.search(str(title)) is not None
+
 def is_hybrid(title, marka, model):
     keywords = [r'\bhybrid\b', r'\bmhev\b', r'\bphev\b', r'\bhev\b', r'\bhyb\b']
     title_str = str(title).lower()
@@ -178,9 +199,9 @@ if __name__ == '__main__':
         bidfax_df[ma_vin].sort_values('_data_sort').drop_duplicates('VIN', keep='last'),
     ]).drop(columns=['_data_sort'])
 
-    otomoto_df['Marka'] = otomoto_df['Marka'].astype(str).str.lower().str.strip()
+    otomoto_df['Marka'] = otomoto_df['Marka'].map(normalizuj_marke)
     otomoto_df['Model'] = otomoto_df['Model'].astype(str).str.lower().str.strip()
-    bidfax_df['Marka'] = bidfax_df['Marka'].astype(str).str.lower().str.strip()
+    bidfax_df['Marka'] = bidfax_df['Marka'].map(normalizuj_marke)
     bidfax_df['Model'] = bidfax_df['Model'].astype(str).str.lower().str.strip()
 
     dict_otomoto_models = otomoto_df.groupby('Marka')['Model'].unique().to_dict()
@@ -197,6 +218,10 @@ if __name__ == '__main__':
     else:
         otomoto_df['Pojemnosc_L'] = None
     
+    bidfax_df['Czy_Elektryczne'] = [is_electric(t, ma, poj) for t, ma, poj in zip(bidfax_df['Tytul'], bidfax_df['Marka'], bidfax_df['Pojemnosc_L'])]
+    bidfax_df.loc[bidfax_df['Czy_Elektryczne'], 'Pojemnosc_L'] = POJEMNOSC_ELEKTRYCZNE_L
+    otomoto_df.loc[otomoto_df['Paliwo'] == 'Elektryczny', 'Pojemnosc_L'] = POJEMNOSC_ELEKTRYCZNE_L
+
     otomoto_df['Rok_produkcji'] = pd.to_numeric(otomoto_df['Rok_produkcji'], errors='coerce')
     otomoto_df = otomoto_df[otomoto_df['Rok_produkcji'] > 0].copy()
     otomoto_df['Rok_produkcji'] = otomoto_df['Rok_produkcji'].astype(int)
@@ -237,6 +262,7 @@ if __name__ == '__main__':
     bidfax_df['Czy_Hybryda'] = bidfax_df.apply(lambda row: is_hybrid(row['Tytul'], row['Marka'], row['Otomoto_Model']), axis=1)
     
     def get_excise_rate(row):
+        if row['Czy_Elektryczne']: return STAWKA_AKCYZY_ELEKTRYCZNE
         cap = row['Pojemnosc_L']
         hybrid = row['Czy_Hybryda']
         if pd.isna(cap): rate = 0.186

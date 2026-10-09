@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from DrissionPage import ChromiumPage, ChromiumOptions
+from marki import MARKI_BIDFAX
 
 # ==============================================================================
 # KONFIGURACJA SKRYPTU
@@ -16,15 +17,7 @@ DB_NAME = "samochody.db"
 DOMAIN = "https://en.bidfax.info/"
 MAX_PAGES = 99
 
-MARKI_DO_POBRANIA = [
-    "acura", "alfa-romeo", "aston-martin", "audi", "bentley", "bmw",
-    "cadillac", "chevrolet", "chrysler", "dodge", "ferrari", "ford",
-    "genesis", "gmc", "honda", "hyundai", "infiniti", "jaguar", "jeep",
-    "kia", "lamborghini", "land-rover", "lexus", "lincoln", "lotus",
-    "lucid", "maserati", "mazda", "mclaren-automotive", "mercedes-benz",
-    "mitsubishi", "nissan", "polestar", "pontiac", "porsche", "ram",
-    "rolls-royce", "saab", "subaru", "tesla", "toyota", "volkswagen", "volvo",
-]
+MARKI_DO_POBRANIA = MARKI_BIDFAX  # wspólna lista z Otomoto: scrapers/marki.py
 
 DNI_WSTECZ_POBIERANIE = 365
 DATA_GRANICZNA_POBIERANIA = datetime.now() - timedelta(days=DNI_WSTECZ_POBIERANIE)
@@ -35,6 +28,8 @@ MAX_ROK_PRODUKCJI = datetime.now().year + 1
 SELEKTOR_OFERTY = 'css:.thumbnail.offer'
 PAUZA_BLOKADA_S = 120
 MAX_BLOKAD_POD_RZAD = 3
+MAX_BLEDOW_POD_RZAD = 3          # tyle razy z rzędu ponawiamy stronę po błędzie połączenia/timeoucie, potem porzucamy markę
+MAX_MAREK_Z_BLEDEM_POD_RZAD = 3  # tyle marek z rzędu porzuconych przez błędy = przeglądarka/sieć nie działa, kończymy skrypt
 PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
 
 # ==============================================================================
@@ -91,18 +86,6 @@ def wstaw_ogloszenia_hurtowo(conn, auta):
     except Exception as e:
         logging.error(f"Błąd podczas zapisu do bazy: {e}")
         return 0
-
-def policz_nowe_linki(conn, auta):
-    """Ile ogłoszeń z listy nie ma jeszcze w bazie (po Link). Aktualizacje znanych rekordów się nie liczą."""
-    linki = list({car['Link'] for car in auta})
-    if not linki:
-        return 0
-    znane = set()
-    for i in range(0, len(linki), 500):
-        paczka = linki[i:i + 500]
-        zapytanie = f"SELECT Link FROM bidfax_scd2 WHERE Link IN ({','.join('?' * len(paczka))})"
-        znane.update(r[0] for r in conn.execute(zapytanie, paczka))
-    return len(linki) - len(znane)
 
 def usun_stare_rekordy(conn):
     try:
@@ -249,6 +232,7 @@ def main():
     time.sleep(3)
 
     przerwij = False
+    marki_z_bledem_pod_rzad = 0
     try:
         for marka in MARKI_DO_POBRANIA:
             if przerwij:
@@ -257,6 +241,8 @@ def main():
             aktualna_strona = 1
             puste_strony_pod_rzad = 0
             blokady_pod_rzad = 0
+            bledy_pod_rzad = 0
+            porzucona_przez_bledy = False
             wymus_url = False
 
             while aktualna_strona <= MAX_PAGES:
@@ -277,10 +263,16 @@ def main():
                         html_content = page.html
                         blokada = wykryj_blokade(page, html_content)
                 except Exception as e:
-                    logging.error(f"Błąd połączenia/timeout na stronie {aktualna_strona}: {e}")
+                    bledy_pod_rzad += 1
+                    logging.error(f"Błąd połączenia/timeout na stronie {aktualna_strona} (próba {bledy_pod_rzad}/{MAX_BLEDOW_POD_RZAD}): {e}")
+                    if bledy_pod_rzad >= MAX_BLEDOW_POD_RZAD:
+                        logging.error(f"Porzucam markę {marka.upper()} na stronie {aktualna_strona}: {bledy_pod_rzad} błędy pod rząd.")
+                        porzucona_przez_bledy = True
+                        break
                     time.sleep(5)
                     wymus_url = True
                     continue
+                bledy_pod_rzad = 0
 
                 if blokada:
                     blokady_pod_rzad += 1
@@ -334,18 +326,15 @@ def main():
 
                     auta_do_bazy.append(auto)
 
-                # Stop decyduje o nowych linkach, a nie o zmianach: cena/stan znanych aut potrafią się zmieniać
-                # na każdej stronie i wtedy "baza aktualna" nigdy by nie zadziałało
-                nowe = policz_nowe_linki(conn, auta_do_bazy)
                 faktycznie_zapisane = wstaw_ogloszenia_hurtowo(conn, auta_do_bazy) if auta_do_bazy else 0
                 czas_wyk = time.time() - start_time
 
-                logging.info(f"[{marka.upper()}-S{aktualna_strona}] Zapisano: {faktycznie_zapisane} (nowe: {nowe}) | (Czas: {czas_wyk:.1f}s)")
+                logging.info(f"[{marka.upper()}-S{aktualna_strona}] Zapisano: {faktycznie_zapisane} | (Czas: {czas_wyk:.1f}s)")
 
-                if auta_do_bazy and nowe == 0:
+                if auta_do_bazy and faktycznie_zapisane == 0:
                     puste_strony_pod_rzad += 1
                     if puste_strony_pod_rzad >= 3:
-                        logging.info(f"🛑 Baza aktualna (3 strony bez nowych aut). Przechodzę do następnej marki.")
+                        logging.info(f"🛑 Baza aktualna (3 strony samych duplikatów). Przechodzę do następnej marki.")
                         break
                 else:
                     puste_strony_pod_rzad = 0
@@ -355,6 +344,14 @@ def main():
                     break
 
                 aktualna_strona += 1
+
+            if porzucona_przez_bledy:
+                marki_z_bledem_pod_rzad += 1
+                if marki_z_bledem_pod_rzad >= MAX_MAREK_Z_BLEDEM_POD_RZAD:
+                    logging.error(f"❌ {marki_z_bledem_pod_rzad} marki pod rząd porzucone przez błędy. Przerywam skrypt - sprawdź przeglądarkę i sieć.")
+                    przerwij = True
+            else:
+                marki_z_bledem_pod_rzad = 0
 
             # Czyszczenie po każdej marce, żeby przerwanie skryptu nie zostawiało starych rekordów
             usun_stare_rekordy(conn)

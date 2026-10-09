@@ -4,6 +4,38 @@ import gold
 import pandas as pd
 
 
+class TestNormalizujMarke:
+    @pytest.mark.parametrize("marka,expected", [
+        ("Land Rover", "land-rover"),
+        ("land-rover", "land-rover"),
+        ("Alfa Romeo", "alfa-romeo"),
+        ("Aston Martin", "aston-martin"),
+        ("Mercedes-Benz", "mercedes-benz"),
+        (" BMW ", "bmw"),
+        ("mclaren-automotive", "mclaren"),
+        ("McLaren", "mclaren"),
+    ])
+    def test_obie_strony_daja_ta_sama_postac(self, marka, expected):
+        assert gold.normalizuj_marke(marka) == expected
+
+
+class TestIsElectric:
+    @pytest.mark.parametrize("title,marka", [
+        ("Tesla Model 3 Long Range 2022 White", "tesla"),
+        ("Audi E-Tron GT Prestige Quattro 2024 Gray", "audi"),
+        ("Hyundai Ioniq 5 SEL 2022 Blue", "hyundai"),
+    ])
+    def test_bez_pojemnosci_elektryczne(self, title, marka):
+        assert gold.is_electric(title, marka, None) is True
+
+    def test_pojemnosc_wyklucza_elektryczne(self):
+        # A3 E-Tron 1.4L to hybryda plug-in z silnikiem spalinowym
+        assert gold.is_electric("Audi A3 E-Tron Prestige 2018 Black 1.4L", "audi", 1.4) is False
+
+    def test_spalinowe_bez_pojemnosci_nie_sa_elektryczne(self):
+        assert gold.is_electric("Ford Mustang GT 2020 Red", "ford", float("nan")) is False
+
+
 class TestMapModelDynamic:
     def test_alias_us_to_eu(self):
         assert gold.map_model_dynamic("Ford", "Fusion SE", None) == "mondeo"

@@ -83,16 +83,6 @@ class TestBaza:
         rows = conn.execute("SELECT Cena_USD FROM bidfax_scd2").fetchall()
         assert rows == [(2000,)]
 
-    def test_new_links_ignores_updates_of_known(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(bf, "DB_NAME", str(tmp_path / "t.db"))
-        conn = bf.zainicjalizuj_baze()
-        bf.wstaw_ogloszenia_hurtowo(conn, [self.make_car()])
-        zmieniony = self.make_car(Cena_USD=9999)
-        nowy = self.make_car(Link="https://x/2")
-        assert bf.policz_nowe_linki(conn, [zmieniony]) == 0
-        assert bf.policz_nowe_linki(conn, [zmieniony, nowy, nowy]) == 1
-        assert bf.policz_nowe_linki(conn, []) == 0
-
     def test_init_is_idempotent(self, tmp_path, monkeypatch):
         monkeypatch.setattr(bf, "DB_NAME", str(tmp_path / "t.db"))
         bf.zainicjalizuj_baze().close()
