@@ -41,10 +41,10 @@ DUPLIKATY_STOP_PELNY = 3         # to samo dla backfillu
 # Limity i tempo (ruch ma wyglądać jak człowiek, a nie jak crawler)
 LIMIT_STRON_DZIENNIE = 300
 NOCNA_PRZERWA_GODZINY = (1, 6)   # [od, do) - w tych godzinach skrypt się nie uruchamia
-PAUZA_MIEDZY_STRONAMI_S = (8.0, 25.0)
-DLUGA_PAUZA_SZANSA = 0.10        # co ~10. strona dłuższa przerwa
+PAUZA_MIEDZY_STRONAMI_S = (0.5, 2.0)
+DLUGA_PAUZA_SZANSA = 0.0         # wyłączone: dłuższe przerwy spowalniały skan
 DLUGA_PAUZA_S = (60.0, 180.0)
-PAUZA_MIEDZY_MARKAMI_S = (20.0, 60.0)
+PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
 SZANSA_KLIKNIECIA_PAGINACJI = 0.5  # reszta to wejście po URL
 
 # Po blokadzie nie próbujemy ponownie z tego samego IP: kolejne próby tylko wydłużają ban.
