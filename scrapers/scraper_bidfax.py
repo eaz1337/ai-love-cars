@@ -35,7 +35,7 @@ MAX_ROK_PRODUKCJI = datetime.now().year + 1
 SELEKTOR_OFERTY = 'css:.thumbnail.offer'
 MAX_BLEDOW_POD_RZAD = 3          # tyle razy z rzędu ponawiamy stronę po błędzie połączenia/timeoucie, potem porzucamy markę
 MAX_MAREK_Z_BLEDEM_POD_RZAD = 3  # tyle marek z rzędu porzuconych przez błędy = przeglądarka/sieć nie działa, kończymy skrypt
-DUPLIKATY_STOP_PRZYROST = 1      # strony bez nowych/zmienionych aut pod rząd, po których kończymy markę (przyrost)
+DUPLIKATY_STOP_PRZYROST = 2      # strony bez nowych/zmienionych aut pod rząd, po których kończymy markę (przyrost)
 DUPLIKATY_STOP_PELNY = 3         # to samo dla backfillu
 
 # Limity i tempo (ruch ma wyglądać jak człowiek, a nie jak crawler)
@@ -44,7 +44,7 @@ NOCNA_PRZERWA_GODZINY = (1, 6)   # [od, do) - w tych godzinach skrypt się nie u
 PAUZA_MIEDZY_STRONAMI_S = (0.5, 2.0)
 DLUGA_PAUZA_SZANSA = 0.0         # wyłączone: dłuższe przerwy spowalniały skan
 DLUGA_PAUZA_S = (60.0, 180.0)
-PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
+PAUZA_MIEDZY_MARKAMI_S = (3.0, 6.0)
 SZANSA_KLIKNIECIA_PAGINACJI = 0.0  # klikanie paginacji kosztowało ~5s na stronę; wejście po URL
 
 # Po blokadzie nie próbujemy ponownie z tego samego IP: kolejne próby tylko wydłużają ban.
