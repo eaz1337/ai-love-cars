@@ -39,11 +39,12 @@ DUPLIKATY_STOP_PRZYROST = 2      # strony bez nowych/zmienionych aut pod rząd, 
 DUPLIKATY_STOP_PELNY = 3         # to samo dla backfillu
 
 # Limity i tempo (ruch ma wyglądać jak człowiek, a nie jak crawler)
-LIMIT_STRON_DZIENNIE = 300
+LIMIT_STRON_DZIENNIE = 2000
 NOCNA_PRZERWA_GODZINY = (1, 6)   # [od, do) - w tych godzinach skrypt się nie uruchamia
-PAUZA_MIEDZY_STRONAMI_S = (0.5, 2.0)
-DLUGA_PAUZA_SZANSA = 0.0         # wyłączone: dłuższe przerwy spowalniały skan
-DLUGA_PAUZA_S = (60.0, 180.0)
+LIMIT_STRON_NA_PRZEBIEG = 80     # po tylu stronach przebieg się kończy (kolejne uruchomienie = odpoczynek dla IP)
+PAUZA_MIEDZY_STRONAMI_S = (3.0, 5.0)
+DLUGA_PAUZA_SZANSA = 0.05        # co ok. 20. stronę dłuższa przerwa, żeby ruch nie był równomierny
+DLUGA_PAUZA_S = (30.0, 90.0)
 PAUZA_MIEDZY_MARKAMI_S = (3.0, 6.0)
 SZANSA_KLIKNIECIA_PAGINACJI = 0.0  # klikanie paginacji kosztowało ~5s na stronę; wejście po URL
 
@@ -369,6 +370,7 @@ class Skaner:
         self.sesja = sesja
         self.pelny = pelny
         self.bez_limitow = bez_limitow
+        self.strony_w_przebiegu = 0
         self.max_stron = MAX_PAGES if pelny else MAX_PAGES_PRZYROST
         self.duplikaty_stop = DUPLIKATY_STOP_PELNY if pelny else DUPLIKATY_STOP_PRZYROST
 
@@ -392,6 +394,10 @@ class Skaner:
             if not self.bez_limitow and strony_dzisiaj(self.conn) >= LIMIT_STRON_DZIENNIE:
                 logging.info(f"Dzienny limit {LIMIT_STRON_DZIENNIE} stron wyczerpany. Wznowię jutro.")
                 return self.LIMIT
+            if not self.bez_limitow and self.strony_w_przebiegu >= LIMIT_STRON_NA_PRZEBIEG:
+                logging.info(f"Limit {LIMIT_STRON_NA_PRZEBIEG} stron na przebieg osiągnięty. Kończę, żeby dać IP odpocząć "
+                             f"(wznów później; w trybie --pelny postęp jest zapisany).")
+                return self.LIMIT
             if not pierwsza:
                 self._pauza_miedzy_stronami()
             pierwsza = False
@@ -412,6 +418,7 @@ class Skaner:
                 continue
             bledy_pod_rzad = 0
             dolicz_strone(self.conn)
+            self.strony_w_przebiegu += 1
 
             if blokada:
                 n, do = zarejestruj_blokade(self.conn)
