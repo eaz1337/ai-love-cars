@@ -116,3 +116,27 @@ class TestUzupelnijWersjeZMocy:
         df = self._df(self._wzorce() + [("porsche", "cayenne", 4.8, 520, wersje.WERSJA_PODSTAWOWA, "Benzyna")])
         df.at[df.index[-1], "Tokeny"] = frozenset({"prestige"})
         assert wersje.uzupelnij_wersje_z_mocy(df).iloc[-1] == wersje.WERSJA_PODSTAWOWA
+
+
+class TestNadwozie:
+    def test_gran_coupe_in_title(self):
+        assert wersje.nadwozie('Bmw 650I Gran Coupe 2018 Black 4.4L') == 'gran coupe'
+        assert wersje.nadwozie('BMW 640d Grancoupé') == 'gran coupe'
+
+    def test_cabrio_variants(self):
+        assert wersje.nadwozie('BMW 650i Cabrio') == 'cabrio'
+        assert wersje.nadwozie('Mustang Convertible') == 'cabrio'
+
+    def test_plain_title_is_standard(self):
+        assert wersje.nadwozie('BMW Seria 6 650i xDrive') == 'standard'
+
+    def test_description_used_when_title_silent(self):
+        assert wersje.nadwozie('BMW Seria 6 650i', 'Piękne cabrio, serwis ASO') == 'cabrio'
+        assert wersje.nadwozie('BMW Seria 6 650i', None) == 'standard'
+
+    def test_title_beats_description(self):
+        assert wersje.nadwozie('BMW 640d Gran Coupe', 'wymiana na cabrio') == 'gran coupe'
+
+    def test_body_words_do_not_split_versions(self):
+        assert 'gran' not in wersje.tokeny_wersji('BMW 650i Gran Coupe')
+        assert 'cabrio' not in wersje.tokeny_wersji('BMW 650i Cabrio')

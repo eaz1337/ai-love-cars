@@ -22,7 +22,12 @@ MAX_ROZRZUT_MOCY_WZORCA = 0.20   # wzorzec odpada, gdy moce jego ogłoszeń są 
 # Skrzynia i napęd to osobne cechy (Otomoto ma na nie własne kolumny), nie wersja silnikowa. Dzieliłyby grupy bez potrzeby
 IGNOROWANE_SLOWA = frozenset({
     'tiptronic', 'tronic', 'dsg', 'automatik', 'automatic', 'aut', 'manual', 'xdrive', 'quattro', '4matic', 'awd', '4x4',
+    'gran', 'cabrio', 'cabriolet', 'convertible', 'roadster',   # nadwozie ma własną kolumnę, patrz nadwozie()
 })
+
+NADWOZIE_STANDARD = 'standard'
+_GRAN_COUPE = re.compile(r'\bgran[\s-]*coup[eé]\b')
+_CABRIO = re.compile(r'\b(cabrio|cabriolet|convertible|roadster)\b')
 
 
 def tokeny_wersji(tekst, wyklucz=()):
@@ -38,6 +43,18 @@ def tokeny_wersji(tekst, wyklucz=()):
             continue
         wynik.add(slowo)
     return frozenset(wynik)
+
+
+def nadwozie(tytul, opis=''):
+    """'gran coupe', 'cabrio' albo 'standard'. Coupé, sedan i kombi to dla ceny jedno 'standard'; osobno wydzielamy tylko nadwozia,
+    które wyraźnie zmieniają cenę (Gran Coupé to inne, 4-drzwiowe auto, cabrio kosztuje więcej od coupé).
+    Tytuł Otomoto często tego nie mówi, więc szukamy też w opisie. Tytuł ma pierwszeństwo przed opisem."""
+    for tekst in (str(tytul).lower(), str(opis if opis is not None else '').lower()):
+        if _GRAN_COUPE.search(tekst):
+            return 'gran coupe'
+        if _CABRIO.search(tekst):
+            return 'cabrio'
+    return NADWOZIE_STANDARD
 
 
 def buduj_slownik(otomoto, bidfax):

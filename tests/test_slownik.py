@@ -4,12 +4,15 @@ import pytest
 import slownik
 from wersje import WERSJA_PODSTAWOWA
 
-CSV = """marka,model,wersja,slowa,zakaz_slow,moc_od,moc_do,pojemnosc_od,pojemnosc_do
-porsche,cayenne,turbo gt,turbo gt,,625,650,3.9,4.1
-porsche,cayenne,turbo,turbo,,480,550,,
-porsche,cayenne,gts,gts,,405,440,,
-porsche,cayenne,s,s,,385,420,,
-ford,focus,st,st,line,220,280,,
+CSV = """marka,model,wersja,slowa,zakaz_slow,moc_od,moc_do,pojemnosc_od,pojemnosc_do,rok_od,rok_do
+porsche,cayenne,turbo gt,turbo gt,,625,650,3.9,4.1,,
+porsche,cayenne,turbo,turbo,,480,550,,,,
+porsche,cayenne,gts,gts,,405,440,,,,
+porsche,cayenne,s,s,,385,420,,,,
+ford,focus,st,st,line,220,280,,,,
+bmw,seria 6,640i,640i,,,,,,,
+bmw,seria 6,650i 408km,650i,,400,415,4.3,4.5,,2014
+bmw,seria 6,650i 450km,650i,,445,455,4.3,4.5,2015,
 """
 
 
@@ -25,7 +28,7 @@ class TestWczytaj:
         assert slownik.wczytaj_slownik(str(tmp_path / "brak.csv")) == {}
 
     def test_groups_by_make_and_model(self, wpisy):
-        assert set(wpisy) == {("porsche", "cayenne"), ("ford", "focus")}
+        assert set(wpisy) == {("porsche", "cayenne"), ("ford", "focus"), ("bmw", "seria 6")}
         assert len(wpisy[("porsche", "cayenne")]) == 4
 
     def test_missing_required_columns_raises(self, tmp_path):
@@ -69,6 +72,31 @@ class TestWersjaReczna:
 
     def test_missing_power_is_ignored(self, wpisy):
         assert slownik.wersja_reczna(set(), self.cayenne(wpisy), moc=float("nan")) == WERSJA_PODSTAWOWA
+
+
+class TestRocznik:
+    def seria6(self, wpisy):
+        return wpisy[("bmw", "seria 6")]
+
+    def test_year_decides_without_power(self, wpisy):
+        # Bidfax: tylko tytuł i rocznik
+        assert slownik.wersja_reczna({"650i"}, self.seria6(wpisy), rok=2012) == "650i 408km"
+        assert slownik.wersja_reczna({"650i"}, self.seria6(wpisy), rok=2016) == "650i 450km"
+
+    def test_power_beats_year(self, wpisy):
+        # Otomoto: 450 KM w aucie z 2012 to wersja 450, mimo rocznika
+        assert slownik.wersja_reczna({"650i"}, self.seria6(wpisy), moc=450, rok=2012) == "650i 450km"
+        assert slownik.wersja_reczna({"650i"}, self.seria6(wpisy), moc=407, rok=2016) == "650i 408km"
+
+    def test_power_outside_every_range_is_base(self, wpisy):
+        assert slownik.wersja_reczna({"650i"}, self.seria6(wpisy), moc=520, rok=2013) == WERSJA_PODSTAWOWA
+
+    def test_missing_year_does_not_match_year_entry(self, wpisy):
+        assert slownik.wersja_reczna({"650i"}, self.seria6(wpisy)) == WERSJA_PODSTAWOWA
+
+    def test_entry_without_year_ignores_year(self, wpisy):
+        assert slownik.wersja_reczna({"640i"}, self.seria6(wpisy), moc=320, rok=2012) == "640i"
+        assert slownik.wersja_reczna({"640i"}, self.seria6(wpisy)) == "640i"
 
 
 def test_szkic_slownika():

@@ -39,7 +39,7 @@ DUPLIKATY_STOP_PRZYROST = 2      # strony bez nowych/zmienionych aut pod rząd, 
 DUPLIKATY_STOP_PELNY = 3         # to samo dla backfillu
 
 # Limity i tempo (ruch ma wyglądać jak człowiek, a nie jak crawler)
-LIMIT_STRON_DZIENNIE = 2000
+LIMIT_STRON_DZIENNIE = 300
 NOCNA_PRZERWA_GODZINY = (1, 6)   # [od, do) - w tych godzinach skrypt się nie uruchamia
 LIMIT_STRON_NA_PRZEBIEG = 80     # po tylu stronach przebieg się kończy (kolejne uruchomienie = odpoczynek dla IP)
 PAUZA_MIEDZY_STRONAMI_S = (3.0, 5.0)

@@ -6,7 +6,7 @@ import os
 
 from koszty import transport_ladowy_usd, wczytaj_koszty
 from slownik import szkic_slownika, wczytaj_slownik, wersja_reczna
-from wersje import WERSJA_PODSTAWOWA, buduj_slownik, tokeny_wersji, uzupelnij_wersje_z_mocy, wersja
+from wersje import WERSJA_PODSTAWOWA, buduj_slownik, nadwozie, tokeny_wersji, uzupelnij_wersje_z_mocy, wersja
 
 # ==========================================
 # 1. KONFIGURACJA ZMIENNYCH FINANSOWYCH
@@ -199,6 +199,10 @@ if __name__ == '__main__':
     otomoto_df = otomoto_df[otomoto_df['Rok_produkcji'] > 0].copy()
     otomoto_df['Rok_produkcji'] = otomoto_df['Rok_produkcji'].astype(int)
     
+    # Nadwozie (gran coupe / cabrio / standard) rozdziela grupy niezależnie od wersji silnikowej
+    otomoto_df['Nadwozie'] = [nadwozie(t, o) for t, o in zip(otomoto_df['Tytul'], otomoto_df['Opis'] if 'Opis' in otomoto_df.columns else [''] * len(otomoto_df))]
+    bidfax_df['Nadwozie'] = bidfax_df['Tytul'].map(nadwozie)
+
     if UZYWAJ_WERSJI:
         otomoto_df['Tokeny'] = [tokeny_wersji(t, (ma, mo)) for t, ma, mo in zip(otomoto_df['Tytul'], otomoto_df['Marka'], otomoto_df['Model'])]
         bidfax_df['Tokeny'] = [tokeny_wersji(m, (ma, om)) for m, ma, om in zip(bidfax_df['Model'], bidfax_df['Marka'], bidfax_df['Otomoto_Model'])]
@@ -216,13 +220,15 @@ if __name__ == '__main__':
         if reczny:
             w_slowniku_o = pd.Series([(ma, mo) in reczny for ma, mo in zip(otomoto_df['Marka'], otomoto_df['Model'])], index=otomoto_df.index)
             otomoto_df.loc[w_slowniku_o, 'Wersja'] = [
-                wersja_reczna(t, reczny[(ma, mo)], moc, poj) for t, ma, mo, moc, poj in zip(
+                wersja_reczna(t, reczny[(ma, mo)], moc, poj, rok) for t, ma, mo, moc, poj, rok in zip(
                     otomoto_df.loc[w_slowniku_o, 'Tokeny'], otomoto_df.loc[w_slowniku_o, 'Marka'], otomoto_df.loc[w_slowniku_o, 'Model'],
-                    pd.to_numeric(otomoto_df.loc[w_slowniku_o, 'Moc_KM'], errors='coerce'), otomoto_df.loc[w_slowniku_o, 'Pojemnosc_L'])]
+                    pd.to_numeric(otomoto_df.loc[w_slowniku_o, 'Moc_KM'], errors='coerce'), otomoto_df.loc[w_slowniku_o, 'Pojemnosc_L'],
+                    otomoto_df.loc[w_slowniku_o, 'Rok_produkcji'])]
             w_slowniku_b = pd.Series([(ma, om) in reczny for ma, om in zip(bidfax_df['Marka'], bidfax_df['Otomoto_Model'])], index=bidfax_df.index)
             bidfax_df.loc[w_slowniku_b, 'Wersja'] = [
-                wersja_reczna(t, reczny[(ma, om)]) for t, ma, om in zip(
-                    bidfax_df.loc[w_slowniku_b, 'Tokeny'], bidfax_df.loc[w_slowniku_b, 'Marka'], bidfax_df.loc[w_slowniku_b, 'Otomoto_Model'])]
+                wersja_reczna(t, reczny[(ma, om)], rok=rok) for t, ma, om, rok in zip(
+                    bidfax_df.loc[w_slowniku_b, 'Tokeny'], bidfax_df.loc[w_slowniku_b, 'Marka'], bidfax_df.loc[w_slowniku_b, 'Otomoto_Model'],
+                    bidfax_df.loc[w_slowniku_b, 'Rocznik'])]
             print(f"ℹ️  Ręczny słownik wersji: {len(reczny)} modeli ({int(w_slowniku_o.sum())} ogłoszeń Otomoto, {int(w_slowniku_b.sum())} aukcji Bidfax).")
 
         if os.environ.get('GOLD_SZKIC_SLOWNIKA'):
@@ -255,7 +261,7 @@ if __name__ == '__main__':
         otomoto_df['Pochodzenie_Kategoria'] = 'Inny_Import'
 
     otomoto_agg = otomoto_df.pivot_table(
-        index=['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Rok_produkcji'], 
+        index=['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rok_produkcji'], 
         columns='Pochodzenie_Kategoria', 
         values='Cena_PLN', 
         aggfunc=['median', 'count']
@@ -285,7 +291,7 @@ if __name__ == '__main__':
         OPLATY_PORTOWE_TUMACZENIA_PLN + TRANSPORT_DO_PL_PLN
     )
 
-    usa_agg = bidfax_df.groupby(['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Rocznik']).agg(
+    usa_agg = bidfax_df.groupby(['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik']).agg(
         Cena_Zakupu_USA_USD=('Cena_USD', 'median'),
         Procent_Hybryd=('Czy_Hybryda', 'mean'), 
         Koszt_Import_PLN=('Koszt_Import_PLN', 'median'),
@@ -297,7 +303,7 @@ if __name__ == '__main__':
     
     usa_agg = usa_agg[usa_agg['Ilosc_Aukcje_USA'] >= MIN_AUKCJI_USA]
 
-    gold_layer = pd.merge(usa_agg, otomoto_agg, left_on=['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Rocznik'], right_on=['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Rok_produkcji'], how='inner')
+    gold_layer = pd.merge(usa_agg, otomoto_agg, left_on=['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik'], right_on=['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rok_produkcji'], how='inner')
     gold_layer.drop(columns=['Otomoto_Model'], inplace=True)
 
     # NOWOŚĆ: Usuwamy wiersze, dla których brakuje ceny referencyjnej z Otomoto (zapobiega to liczeniu na NULLach)
@@ -318,7 +324,7 @@ if __name__ == '__main__':
     assert (gold_layer['Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
 
     base_cols = [
-        'Marka', 'Model', 'Wersja', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
+        'Marka', 'Model', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN',
         'Cena_Zakupu_USA_USD', 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
         'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%'

@@ -98,3 +98,46 @@ class TestBaza:
         bf.usun_stare_rekordy(conn)
         links = [r[0] for r in conn.execute("SELECT Link FROM bidfax_scd2")]
         assert links == ["brak"]
+
+
+class TestStanSkanowania:
+    def conn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bf, "DB_NAME", str(tmp_path / "t.db"))
+        return bf.zainicjalizuj_baze()
+
+    def test_blokada_backoff_rosnie_i_sukces_zeruje(self, tmp_path, monkeypatch):
+        conn = self.conn(tmp_path, monkeypatch)
+        assert bf.blokada_do(conn) is None
+        n1, do1 = bf.zarejestruj_blokade(conn)
+        n2, do2 = bf.zarejestruj_blokade(conn)
+        assert (n1, n2) == (1, 2)
+        assert do2 - do1 > bf.timedelta(minutes=15)  # 30 min po 10 min
+        assert bf.blokada_do(conn) is not None
+        bf.zarejestruj_sukces(conn)
+        assert bf.zarejestruj_blokade(conn)[0] == 1
+
+    def test_backoff_powtarza_ostatni_wpis(self, tmp_path, monkeypatch):
+        conn = self.conn(tmp_path, monkeypatch)
+        for _ in range(len(bf.BACKOFF_BLOKADY) + 2):
+            n, do = bf.zarejestruj_blokade(conn)
+        assert do - bf.datetime.now() <= bf.BACKOFF_BLOKADY[-1]
+
+    def test_licznik_dzienny(self, tmp_path, monkeypatch):
+        conn = self.conn(tmp_path, monkeypatch)
+        assert bf.strony_dzisiaj(conn) == 0
+        bf.dolicz_strone(conn)
+        bf.dolicz_strone(conn)
+        assert bf.strony_dzisiaj(conn) == 2
+        bf.ustaw_meta(conn, "licznik_dnia", "2000-01-01|99")
+        assert bf.strony_dzisiaj(conn) == 0
+
+    def test_stan_marek_wznawianie(self, tmp_path, monkeypatch):
+        conn = self.conn(tmp_path, monkeypatch)
+        bf.zapisz_stan_marki(conn, "ford", 5, False)
+        bf.zapisz_stan_marki(conn, "bmw", 1, True)
+        assert bf.stan_marek_pelny(conn) == {"ford": (5, False), "bmw": (1, True)}
+
+    def test_wykryj_blokade(self):
+        assert bf.wykryj_blokade("403 Forbidden", "") == "403"
+        assert bf.wykryj_blokade("Just a moment...", "") == "cloudflare"
+        assert bf.wykryj_blokade("Ford", "thumbnail offer cdnjs.cloudflare.com") is None
