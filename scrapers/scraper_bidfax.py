@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 DB_NAME = "samochody.db"
 DOMAIN = "https://en.bidfax.info/"
 MAX_PAGES = 99
-MAX_PAGES_PRZYROST = 3           # Bidfax sortuje od najnowszych, więc na co dzień wystarczą pierwsze strony marki
+MAX_PAGES_PRZYROST = MAX_PAGES   # bez limitu: markę kończy dopiero strona bez nowych aut (DUPLIKATY_STOP_PRZYROST)
 
 MARKI_DO_POBRANIA = MARKI_BIDFAX  # wspólna lista z Otomoto: scrapers/marki.py
 
@@ -45,7 +45,7 @@ PAUZA_MIEDZY_STRONAMI_S = (0.5, 2.0)
 DLUGA_PAUZA_SZANSA = 0.0         # wyłączone: dłuższe przerwy spowalniały skan
 DLUGA_PAUZA_S = (60.0, 180.0)
 PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
-SZANSA_KLIKNIECIA_PAGINACJI = 0.5  # reszta to wejście po URL
+SZANSA_KLIKNIECIA_PAGINACJI = 0.0  # klikanie paginacji kosztowało ~5s na stronę; wejście po URL
 
 # Po blokadzie nie próbujemy ponownie z tego samego IP: kolejne próby tylko wydłużają ban.
 # n-ta kolejna blokada (bez udanej strony pomiędzy) = n-ty wpis; ostatni wpis powtarza się w nieskończoność.
@@ -300,6 +300,7 @@ class Sesja:
     def __init__(self):
         co = ChromiumOptions()
         co.set_local_port(PORT_CHROME)
+        co.set_load_mode("eager")  # nie czekamy na obrazki i reklamy, parsujemy sam HTML
         co.set_user_data_path(os.path.abspath(PROFIL_CHROME))
         if PROXY:
             co.set_proxy(PROXY)
@@ -344,10 +345,8 @@ class Sesja:
         return "404" in tytul or "not found" in tytul
 
     def zachowuj_sie_jak_czlowiek(self):
-        self.page.scroll.to_half()
-        time.sleep(random.uniform(0.5, 1.5))
         self.page.scroll.to_bottom()
-        time.sleep(random.uniform(1.0, 2.5))
+        time.sleep(random.uniform(0.2, 0.5))
 
 def zapisz_surowy_html(html):
     """Ostatnia udana strona na dysku: gdy Bidfax zmieni układ, parser da się poprawić bez ponownego pobierania."""
