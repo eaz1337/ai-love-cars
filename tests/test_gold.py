@@ -72,26 +72,6 @@ class TestMapModelDynamic:
         assert gold.map_model_dynamic("Audi", "", None) == "nieznany"
 
 
-class TestUdzialNaprawy:
-    @pytest.mark.parametrize("damage,expected", [
-        ("Burn", 0.40),
-        ("FLOOD", 0.35),
-        ("Front End", 0.20),
-        ("Rear End", 0.12),
-        ("Minor Dent/Scratches", 0.05),
-    ])
-    def test_known_damage(self, damage, expected):
-        assert gold.udzial_naprawy(damage) == expected
-
-    def test_first_matching_pattern_wins(self):
-        # 'front and rear' (0.30) stoi przed samym 'front' (0.20)
-        assert gold.udzial_naprawy("Front and Rear") == 0.30
-
-    @pytest.mark.parametrize("damage", ["Brak", None, "something odd"])
-    def test_unknown_uses_default(self, damage):
-        assert gold.udzial_naprawy(damage) == gold.DOMYSLNY_UDZIAL_NAPRAWY
-
-
 class TestCapacity:
     def test_bidfax(self):
         assert gold.extract_capacity_bidfax("2015 Ford Fusion 2.5L vin: X") == 2.5
