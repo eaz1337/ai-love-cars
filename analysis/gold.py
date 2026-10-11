@@ -48,7 +48,7 @@ US_EU_ALIASES = {
 }
 
 # Bidfax podaje slug z URL-a ('land-rover'), Otomoto nazwę wyświetlaną ('Land Rover'). Wspólna postać: małe litery, myślniki
-ALIASY_MAREK = {'mclaren-automotive': 'mclaren'}
+ALIASY_MAREK = {'mclaren-automotive': 'mclaren', 'lucid-motors': 'lucid'}
 
 def normalizuj_marke(marka):
     """'Land Rover' / 'land-rover' -> 'land-rover', 'mclaren-automotive' -> 'mclaren'."""

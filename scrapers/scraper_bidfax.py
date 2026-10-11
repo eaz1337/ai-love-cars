@@ -1,5 +1,3 @@
-import argparse
-import os
 import time
 import random
 import sqlite3
@@ -8,23 +6,25 @@ import re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from DrissionPage import ChromiumPage, ChromiumOptions
-from marki import MARKI_BIDFAX
 
 # ==============================================================================
 # KONFIGURACJA SKRYPTU
 # ==============================================================================
-# Skrypt jest zaprojektowany do częstego, krótkiego uruchamiania (cron co kilka godzin): każdy przebieg robi mały
-# kawałek pracy i kończy się, a przy pierwszej blokadzie zapisuje stan i zostawia IP w spokoju (patrz BACKOFF_BLOKADY).
-#   python scraper_bidfax.py          -> tryb przyrostowy: tylko najnowsze strony każdej marki
-#   python scraper_bidfax.py --pelny  -> backfill wznawiany między uruchomieniami (stan w tabeli bidfax_stan_marek)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 DB_NAME = "samochody.db"
 DOMAIN = "https://en.bidfax.info/"
 MAX_PAGES = 99
-MAX_PAGES_PRZYROST = MAX_PAGES   # bez limitu: markę kończy dopiero strona bez nowych aut (DUPLIKATY_STOP_PRZYROST)
 
-MARKI_DO_POBRANIA = MARKI_BIDFAX  # wspólna lista z Otomoto: scrapers/marki.py
+MARKI_DO_POBRANIA = [
+    "acura", "alfa-romeo", "aston-martin", "audi", "bentley", "bmw",
+    "cadillac", "chevrolet", "chrysler", "dodge", "ferrari", "ford",
+    "genesis", "gmc", "honda", "hyundai", "infiniti", "jaguar", "jeep",
+    "kia", "lamborghini", "land-rover", "lexus", "lincoln", "lotus",
+    "lucid-motors", "maserati", "mazda", "mclaren-automotive", "mercedes-benz",
+    "mitsubishi", "nissan", "polestar", "pontiac", "porsche", "ram",
+    "rolls-royce", "saab", "subaru", "tesla", "toyota", "volkswagen", "volvo",
+]
 
 DNI_WSTECZ_POBIERANIE = 365
 DATA_GRANICZNA_POBIERANIA = datetime.now() - timedelta(days=DNI_WSTECZ_POBIERANIE)
@@ -33,32 +33,9 @@ MIN_ROK_PRODUKCJI = 1950
 MAX_ROK_PRODUKCJI = datetime.now().year + 1
 
 SELEKTOR_OFERTY = 'css:.thumbnail.offer'
-MAX_BLEDOW_POD_RZAD = 3          # tyle razy z rzędu ponawiamy stronę po błędzie połączenia/timeoucie, potem porzucamy markę
-MAX_MAREK_Z_BLEDEM_POD_RZAD = 3  # tyle marek z rzędu porzuconych przez błędy = przeglądarka/sieć nie działa, kończymy skrypt
-DUPLIKATY_STOP_PRZYROST = 2      # strony bez nowych/zmienionych aut pod rząd, po których kończymy markę (przyrost)
-DUPLIKATY_STOP_PELNY = 3         # to samo dla backfillu
-
-# Limity i tempo (ruch ma wyglądać jak człowiek, a nie jak crawler)
-LIMIT_STRON_DZIENNIE = 300
-NOCNA_PRZERWA_GODZINY = (1, 6)   # [od, do) - w tych godzinach skrypt się nie uruchamia
-LIMIT_STRON_NA_PRZEBIEG = 80     # po tylu stronach przebieg się kończy (kolejne uruchomienie = odpoczynek dla IP)
-PAUZA_MIEDZY_STRONAMI_S = (3.0, 5.0)
-DLUGA_PAUZA_SZANSA = 0.05        # co ok. 20. stronę dłuższa przerwa, żeby ruch nie był równomierny
-DLUGA_PAUZA_S = (30.0, 90.0)
-PAUZA_MIEDZY_MARKAMI_S = (3.0, 6.0)
-SZANSA_KLIKNIECIA_PAGINACJI = 0.0  # klikanie paginacji kosztowało ~5s na stronę; wejście po URL
-
-# Po blokadzie nie próbujemy ponownie z tego samego IP: kolejne próby tylko wydłużają ban.
-# n-ta kolejna blokada (bez udanej strony pomiędzy) = n-ty wpis; ostatni wpis powtarza się w nieskończoność.
-BACKOFF_BLOKADY = [timedelta(minutes=10), timedelta(minutes=30), timedelta(hours=2), timedelta(hours=6)]
-
-# Stały profil Chrome zachowuje ciasteczko cf_clearance między uruchomieniami (nowa sesja = nowy challenge).
-# Dotyczy przeglądarki startowanej przez skrypt; Chrome już działający na porcie (Docker) zostaje przejęty tak jak jest.
-PORT_CHROME = 9222
-PROFIL_CHROME = os.environ.get("BIDFAX_PROFIL") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "czysty_profil_bidfax")
-# Proxy tylko rezydencjalne i 'sticky' (to samo IP przez całą sesję). Zmiana IP przy tym samym cf_clearance = blokada.
-# Format: http://user:pass@host:port. Bez zmiennej skrypt idzie z domowego IP, co zwykle jest najlepsze.
-PROXY = os.environ.get("BIDFAX_PROXY")
+PAUZA_BLOKADA_S = 120
+MAX_BLOKAD_POD_RZAD = 3
+PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
 
 # ==============================================================================
 # BAZA DANYCH SQLITE
@@ -82,12 +59,6 @@ def zainicjalizuj_baze():
             pass
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_date_of_sale ON bidfax_scd2 (Date_Of_Sale)")
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bidfax_stan_marek (
-            Marka TEXT PRIMARY KEY, Nastepna_Strona INTEGER, Zakonczona INTEGER, Zaktualizowano TEXT
-        )
-    """)
-    cursor.execute("CREATE TABLE IF NOT EXISTS bidfax_meta (Klucz TEXT PRIMARY KEY, Wartosc TEXT)")
     cursor.execute("PRAGMA journal_mode = WAL;")
     cursor.execute("PRAGMA synchronous = NORMAL;")
     conn.commit()
@@ -120,6 +91,18 @@ def wstaw_ogloszenia_hurtowo(conn, auta):
     except Exception as e:
         logging.error(f"Błąd podczas zapisu do bazy: {e}")
         return 0
+
+def policz_nowe_linki(conn, auta):
+    """Ile ogłoszeń z listy nie ma jeszcze w bazie (po Link). Aktualizacje znanych rekordów się nie liczą."""
+    linki = list({car['Link'] for car in auta})
+    if not linki:
+        return 0
+    znane = set()
+    for i in range(0, len(linki), 500):
+        paczka = linki[i:i + 500]
+        zapytanie = f"SELECT Link FROM bidfax_scd2 WHERE Link IN ({','.join('?' * len(paczka))})"
+        znane.update(r[0] for r in conn.execute(zapytanie, paczka))
+    return len(linki) - len(znane)
 
 def usun_stare_rekordy(conn):
     try:
@@ -197,92 +180,13 @@ def wyciagnij_dane_z_html(html_content, marka):
                      "Date_Of_Sale": detale["Date of sale"], "Link": link})
     return cars
 
-def przygotuj_do_zapisu(samochody):
-    """Normalizuje datę sprzedaży i odrzuca auta spoza okna dat/lat. Zwraca (auta_do_bazy, ile_zbyt_starych)."""
-    auta_do_bazy = []
-    zbyt_stare = 0
-    for auto in samochody:
-        data_str = auto['Date_Of_Sale']
-        if data_str != "Brak":
-            try:
-                data_sprzedazy = datetime.strptime(data_str, "%d.%m.%Y")
-                auto['Date_Of_Sale'] = data_sprzedazy.strftime("%Y-%m-%d")
-                if data_sprzedazy < DATA_GRANICZNA_POBIERANIA:
-                    zbyt_stare += 1
-                    continue
-            except ValueError:
-                # Nieznany format: lepiej "Brak" niż surowy tekst, który psuje porównania dat w czyszczeniu
-                logging.debug(f"Nieparsowalna data sprzedaży: {data_str!r}")
-                auto['Date_Of_Sale'] = "Brak"
-
-        rocznik = auto['Rocznik']
-        if rocznik is not None and (rocznik < MIN_ROK_PRODUKCJI or rocznik > MAX_ROK_PRODUKCJI):
-            continue
-        auta_do_bazy.append(auto)
-    return auta_do_bazy, zbyt_stare
-
 # ==============================================================================
-# STAN SKANOWANIA (wznawianie, backoff, dzienny limit)
+# WYKRYWANIE BLOKAD
 # ==============================================================================
-def pobierz_meta(conn, klucz, domyslna=None):
-    wiersz = conn.execute("SELECT Wartosc FROM bidfax_meta WHERE Klucz = ?", (klucz,)).fetchone()
-    return wiersz[0] if wiersz else domyslna
-
-def ustaw_meta(conn, klucz, wartosc):
-    conn.execute("INSERT INTO bidfax_meta (Klucz, Wartosc) VALUES (?, ?) "
-                 "ON CONFLICT(Klucz) DO UPDATE SET Wartosc = excluded.Wartosc", (klucz, str(wartosc)))
-    conn.commit()
-
-def blokada_do(conn):
-    """Moment, przed którym nie wolno łączyć się z Bidfax (None = brak blokady)."""
-    tekst = pobierz_meta(conn, "blokada_do")
-    if not tekst:
-        return None
-    teraz = datetime.now()
-    do = datetime.fromisoformat(tekst)
-    return do if do > teraz else None
-
-def zarejestruj_blokade(conn):
-    """Zwiększa licznik kolejnych blokad, ustawia pauzę z backoffem i zwraca (numer_blokady, do_kiedy)."""
-    n = int(pobierz_meta(conn, "blokady_pod_rzad", 0)) + 1
-    do = datetime.now() + BACKOFF_BLOKADY[min(n - 1, len(BACKOFF_BLOKADY) - 1)]
-    ustaw_meta(conn, "blokady_pod_rzad", n)
-    ustaw_meta(conn, "blokada_do", do.isoformat(timespec="seconds"))
-    return n, do
-
-def zarejestruj_sukces(conn):
-    if int(pobierz_meta(conn, "blokady_pod_rzad", 0)):
-        ustaw_meta(conn, "blokady_pod_rzad", 0)
-
-def strony_dzisiaj(conn):
-    dzien, _, licznik = pobierz_meta(conn, "licznik_dnia", "").partition("|")
-    return int(licznik) if dzien == datetime.now().strftime("%Y-%m-%d") and licznik else 0
-
-def dolicz_strone(conn):
-    ustaw_meta(conn, "licznik_dnia", f"{datetime.now():%Y-%m-%d}|{strony_dzisiaj(conn) + 1}")
-
-def w_nocnej_przerwie():
-    od, do = NOCNA_PRZERWA_GODZINY
-    return od <= datetime.now().hour < do
-
-def stan_marek_pelny(conn):
-    """{marka: (nastepna_strona, zakonczona)} dla backfillu."""
-    return {m: (s, bool(z)) for m, s, z in conn.execute("SELECT Marka, Nastepna_Strona, Zakonczona FROM bidfax_stan_marek")}
-
-def zapisz_stan_marki(conn, marka, nastepna_strona, zakonczona):
-    conn.execute("INSERT INTO bidfax_stan_marek (Marka, Nastepna_Strona, Zakonczona, Zaktualizowano) VALUES (?, ?, ?, ?) "
-                 "ON CONFLICT(Marka) DO UPDATE SET Nastepna_Strona = excluded.Nastepna_Strona, "
-                 "Zakonczona = excluded.Zakonczona, Zaktualizowano = excluded.Zaktualizowano",
-                 (marka, nastepna_strona, int(zakonczona), datetime.now().isoformat(timespec="seconds")))
-    conn.commit()
-
-# ==============================================================================
-# PRZEGLĄDARKA I WYKRYWANIE BLOKAD
-# ==============================================================================
-def wykryj_blokade(tytul, html_content):
+def wykryj_blokade(page, html_content):
     """Zwraca '403', 'cloudflare' albo None. Patrzy na tytuł i treść tylko wtedy, gdy na stronie nie ma ofert
     (zwykła strona ładuje skrypty z cdnjs.cloudflare.com, więc samo słowo 'cloudflare' nic nie znaczy)."""
-    tytul = (tytul or "").lower()
+    tytul = (page.title or "").lower()
     if "403" in tytul and "forbidden" in tytul:
         return "403"
     if "just a moment" in tytul or "attention required" in tytul:
@@ -295,244 +199,168 @@ def wykryj_blokade(tytul, html_content):
             return "cloudflare"
     return None
 
-class Sesja:
-    """Jedna przeglądarka z trwałym profilem: nawigacja, zachowanie jak człowiek, wykrywanie blokad."""
-
-    def __init__(self):
-        co = ChromiumOptions()
-        co.set_local_port(PORT_CHROME)
-        co.set_load_mode("eager")  # nie czekamy na obrazki i reklamy, parsujemy sam HTML
-        co.set_user_data_path(os.path.abspath(PROFIL_CHROME))
-        if PROXY:
-            co.set_proxy(PROXY)
-        self.page = ChromiumPage(co)
-
-    def start(self):
-        self.page.get(DOMAIN)
-        time.sleep(3)
-
-    def _przejdz(self, url, numer_strony, bezposrednio):
-        """Strona 1 ładuje się z URL. Kolejne bywają klikane (losowo), a gdy przycisku nie ma (paginacja pokazuje
-        tylko okno kilku numerów) albo po błędzie, wchodzimy bezpośrednio na URL."""
-        if numer_strony == 1 or bezposrednio or random.random() > SZANSA_KLIKNIECIA_PAGINACJI:
-            self.page.get(url)
-            return
-        przycisk = self.page.ele(f'xpath://div[contains(@class, "pagi-nav")]//a[text()="{numer_strony}"]', timeout=5)
-        if not przycisk:
-            self.page.get(url)
-            return
-        przycisk.scroll.to_see(center=True)
-        time.sleep(random.uniform(1.0, 2.0))
-        przycisk.hover()
-        time.sleep(random.uniform(0.5, 1.5))
-        przycisk.click()
-        time.sleep(3)  # czekamy aż strona zacznie się ładować
-
-    def pobierz(self, url, numer_strony, bezposrednio=False):
-        """Zwraca (html, blokada). Błędy połączenia lecą wyjątkiem do wywołującego."""
-        self._przejdz(url, numer_strony, bezposrednio)
-        self.page.wait.ele_displayed(SELEKTOR_OFERTY, timeout=8)
-        html = self.page.html
-        blokada = wykryj_blokade(self.page.title, html)
-        if blokada == "cloudflare":
-            logging.warning("⚠️ Cloudflare analizuje połączenie! Czekam do 15s...")
-            self.page.wait.ele_displayed(SELEKTOR_OFERTY, timeout=15)
-            html = self.page.html
-            blokada = wykryj_blokade(self.page.title, html)
-        return html, blokada
-
-    def strona_nie_istnieje(self):
-        tytul = (self.page.title or "").lower()
-        return "404" in tytul or "not found" in tytul
-
-    def zachowuj_sie_jak_czlowiek(self):
-        self.page.scroll.to_bottom()
-        time.sleep(random.uniform(0.2, 0.5))
-
-def zapisz_surowy_html(html):
-    """Ostatnia udana strona na dysku: gdy Bidfax zmieni układ, parser da się poprawić bez ponownego pobierania."""
-    try:
-        sciezka = os.path.join(os.path.dirname(os.path.abspath(DB_NAME)), "bidfax_ostatnia_strona.html")
-        with open(sciezka, "w", encoding="utf-8") as f:
-            f.write(html)
-    except OSError as e:
-        logging.debug(f"Nie zapisano surowego HTML: {e}")
+def strona_nie_istnieje(page):
+    tytul = (page.title or "").lower()
+    return "404" in tytul or "not found" in tytul
 
 # ==============================================================================
-# SKANER
+# NAWIGACJA - SYMULACJA KLIKNIĘĆ
 # ==============================================================================
-class Skaner:
-    # Wyniki skanowania marki
-    OK, BLOKADA, BLAD, LIMIT = "ok", "blokada", "blad", "limit"
+def bezpieczne_przejscie(page, url, aktualna_strona, bezposrednio=False):
+    """Strona 1 ładuje się z URL, kolejne są klikane fizycznie. Gdy przycisku nie ma (paginacja pokazuje tylko
+    okno kilku numerów) albo po blokadzie (`bezposrednio=True`), wchodzimy bezpośrednio na URL."""
+    if aktualna_strona == 1 or bezposrednio:
+        page.get(url)
+        return
 
-    def __init__(self, conn, sesja, pelny, bez_limitow=False):
-        self.conn = conn
-        self.sesja = sesja
-        self.pelny = pelny
-        self.bez_limitow = bez_limitow
-        self.strony_w_przebiegu = 0
-        self.max_stron = MAX_PAGES if pelny else MAX_PAGES_PRZYROST
-        self.duplikaty_stop = DUPLIKATY_STOP_PELNY if pelny else DUPLIKATY_STOP_PRZYROST
+    logging.info(f"👉 Szukam przycisku dla strony {aktualna_strona}...")
+    kolejna_strona_btn = page.ele(f'xpath://div[contains(@class, "pagi-nav")]//a[text()="{aktualna_strona}"]', timeout=5)
+    if not kolejna_strona_btn:
+        logging.info(f"Brak przycisku strony {aktualna_strona}, wchodzę bezpośrednio na URL.")
+        page.get(url)
+        return
 
-    def _pauza_miedzy_stronami(self):
-        if random.random() < DLUGA_PAUZA_SZANSA:
-            pauza = random.uniform(*DLUGA_PAUZA_S)
-            logging.info(f"☕ Dłuższa przerwa: {pauza:.0f}s")
-        else:
-            pauza = random.uniform(*PAUZA_MIEDZY_STRONAMI_S)
-        time.sleep(pauza)
-
-    def skanuj_marke(self, marka, strona_start=1):
-        """Zwraca wynik skanowania. W trybie pełnym zapisuje postęp, żeby kolejne uruchomienie wznowiło od tej strony."""
-        strona = strona_start
-        duplikaty_pod_rzad = 0
-        bledy_pod_rzad = 0
-        wymus_url = False
-        pierwsza = True
-
-        while strona <= self.max_stron:
-            if not self.bez_limitow and strony_dzisiaj(self.conn) >= LIMIT_STRON_DZIENNIE:
-                logging.info(f"Dzienny limit {LIMIT_STRON_DZIENNIE} stron wyczerpany. Wznowię jutro.")
-                return self.LIMIT
-            if not self.bez_limitow and self.strony_w_przebiegu >= LIMIT_STRON_NA_PRZEBIEG:
-                logging.info(f"Limit {LIMIT_STRON_NA_PRZEBIEG} stron na przebieg osiągnięty. Kończę, żeby dać IP odpocząć "
-                             f"(wznów później; w trybie --pelny postęp jest zapisany).")
-                return self.LIMIT
-            if not pierwsza:
-                self._pauza_miedzy_stronami()
-            pierwsza = False
-
-            url = f"{DOMAIN}{marka}/" if strona == 1 else f"{DOMAIN}{marka}/page/{strona}/"
-            try:
-                start_time = time.time()
-                html, blokada = self.sesja.pobierz(url, strona, bezposrednio=wymus_url)
-                wymus_url = False
-            except Exception as e:
-                bledy_pod_rzad += 1
-                logging.error(f"Błąd połączenia/timeout na stronie {strona} (próba {bledy_pod_rzad}/{MAX_BLEDOW_POD_RZAD}): {e}")
-                if bledy_pod_rzad >= MAX_BLEDOW_POD_RZAD:
-                    logging.error(f"Porzucam markę {marka.upper()} na stronie {strona}: {bledy_pod_rzad} błędy pod rząd.")
-                    return self.BLAD
-                time.sleep(5)
-                wymus_url = True
-                continue
-            bledy_pod_rzad = 0
-            dolicz_strone(self.conn)
-            self.strony_w_przebiegu += 1
-
-            if blokada:
-                n, do = zarejestruj_blokade(self.conn)
-                logging.error(f"❌ Blokada ({blokada}) na {marka.upper()} str. {strona}. Kończę przebieg i odpuszczam IP "
-                              f"do {do:%Y-%m-%d %H:%M} (blokada nr {n} z rzędu). Jeśli trzeba, rozwiąż captchę w przeglądarce.")
-                return self.BLOKADA
-            zarejestruj_sukces(self.conn)
-
-            if 'thumbnail offer' not in html:
-                if self.sesja.strona_nie_istnieje():
-                    logging.info("Koniec ofert dla tej marki (Błąd 404).")
-                else:
-                    logging.warning("Brak ofert na stronie (koniec marki lub pusta strona).")
-                break
-
-            zapisz_surowy_html(html)
-            self.sesja.zachowuj_sie_jak_czlowiek()
-
-            samochody = wyciagnij_dane_z_html(html, marka)
-            if not samochody:
-                break
-
-            auta_do_bazy, zbyt_stare = przygotuj_do_zapisu(samochody)
-            zapisane = wstaw_ogloszenia_hurtowo(self.conn, auta_do_bazy) if auta_do_bazy else 0
-            logging.info(f"[{marka.upper()}-S{strona}] Zapisano: {zapisane} | (Czas: {time.time() - start_time:.1f}s)")
-
-            if self.pelny:
-                zapisz_stan_marki(self.conn, marka, strona + 1, False)
-
-            if auta_do_bazy and zapisane == 0:
-                duplikaty_pod_rzad += 1
-                if duplikaty_pod_rzad >= self.duplikaty_stop:
-                    logging.info(f"🛑 Baza aktualna ({duplikaty_pod_rzad} str. bez nowych aut). Przechodzę do następnej marki.")
-                    break
-            else:
-                duplikaty_pod_rzad = 0
-
-            if zbyt_stare == len(samochody):
-                logging.info(f"⏰ Dotarto do aukcji starszych niż {DNI_WSTECZ_POBIERANIE} dni. Idę dalej.")
-                break
-
-            strona += 1
-
-        if self.pelny:
-            zapisz_stan_marki(self.conn, marka, 1, True)
-        usun_stare_rekordy(self.conn)  # po każdej marce, żeby przerwanie skryptu nie zostawiało starych rekordów
-        return self.OK
-
-    def uruchom(self, od_nowa=False):
-        marki = list(MARKI_DO_POBRANIA)
-        random.shuffle(marki)  # inna kolejność przy każdym uruchomieniu zamiast alfabetycznego marszu
-
-        stan = {}
-        if self.pelny:
-            if od_nowa:
-                self.conn.execute("DELETE FROM bidfax_stan_marek")
-                self.conn.commit()
-            stan = stan_marek_pelny(self.conn)
-            marki = [m for m in marki if not stan.get(m, (1, False))[1]]
-            if not marki:
-                logging.info("Backfill zakończony dla wszystkich marek. Użyj --od-nowa, by zacząć nowy cykl.")
-                return
-            # Najpierw marki rozpoczęte, żeby domykać je przed ruszeniem nowych
-            marki.sort(key=lambda m: stan.get(m, (1, False))[0] == 1)
-
-        marki_z_bledem_pod_rzad = 0
-        for marka in marki:
-            logging.info(f"\n{'='*50}\nSKANOWANIE MARKI: {marka.upper()} ({'pełne' if self.pelny else 'przyrost'})\n{'='*50}")
-            wynik = self.skanuj_marke(marka, stan.get(marka, (1, False))[0])
-
-            if wynik in (self.BLOKADA, self.LIMIT):
-                return
-            if wynik == self.BLAD:
-                marki_z_bledem_pod_rzad += 1
-                if marki_z_bledem_pod_rzad >= MAX_MAREK_Z_BLEDEM_POD_RZAD:
-                    logging.error(f"❌ {marki_z_bledem_pod_rzad} marki pod rząd porzucone przez błędy. Przerywam skrypt - sprawdź przeglądarkę i sieć.")
-                    return
-            else:
-                marki_z_bledem_pod_rzad = 0
-            time.sleep(random.uniform(*PAUZA_MIEDZY_MARKAMI_S))
+    kolejna_strona_btn.scroll.to_see(center=True)
+    time.sleep(random.uniform(1.0, 2.0))
+    kolejna_strona_btn.hover()
+    time.sleep(random.uniform(0.5, 1.5))
+    kolejna_strona_btn.click()
+    logging.info(f"✅ Kliknięto stronę {aktualna_strona}.")
+    time.sleep(3) # Czekamy aż strona zacznie się ładować
 
 # ==============================================================================
-# GŁÓWNA FUNKCJA
+# GŁÓWNA PĘTLA
 # ==============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="Scraper Bidfax (przyrostowy lub pełny, wznawiany).")
-    parser.add_argument("--pelny", action="store_true", help="backfill do 99 stron na markę, wznawiany między uruchomieniami")
-    parser.add_argument("--od-nowa", action="store_true", help="z --pelny: zeruje postęp i zaczyna nowy cykl")
-    parser.add_argument("--bez-limitow", action="store_true", help="ignoruje nocną przerwę, dzienny limit i aktywną pauzę po blokadzie")
-    args = parser.parse_args()
-
     conn = zainicjalizuj_baze()
+
+    co = ChromiumOptions()
+    co.set_local_port(9222)
+
     try:
-        if not args.bez_limitow:
-            do = blokada_do(conn)
-            if do:
-                logging.info(f"Pauza po blokadzie do {do:%Y-%m-%d %H:%M}. Nie łączę się z Bidfax.")
-                return
-            if w_nocnej_przerwie():
-                logging.info(f"Nocna przerwa ({NOCNA_PRZERWA_GODZINY[0]}:00-{NOCNA_PRZERWA_GODZINY[1]}:00). Kończę.")
-                return
-            if strony_dzisiaj(conn) >= LIMIT_STRON_DZIENNIE:
-                logging.info(f"Dzienny limit {LIMIT_STRON_DZIENNIE} stron wyczerpany. Kończę.")
-                return
+        page = ChromiumPage(co)
+    except Exception as e:
+        logging.error(f"Nie udało się połączyć. Odpal Chrome komendą z portem 9222! ({e})")
+        conn.close()
+        return
 
-        try:
-            sesja = Sesja()
-        except Exception as e:
-            logging.error(f"Nie udało się uruchomić/połączyć z Chrome na porcie {PORT_CHROME}! ({e})")
-            return
+    logging.info("Przejęto kontrolę nad przeglądarką! Wchodzę na Bidfax...")
+    page.get(DOMAIN)
+    time.sleep(3)
 
-        logging.info("Przejęto kontrolę nad przeglądarką! Wchodzę na Bidfax...")
-        sesja.start()
-        Skaner(conn, sesja, args.pelny, args.bez_limitow).uruchom(od_nowa=args.od_nowa)
+    przerwij = False
+    try:
+        for marka in MARKI_DO_POBRANIA:
+            if przerwij:
+                break
+            logging.info(f"\n{'='*50}\nSKANOWANIE MARKI: {marka.upper()}\n{'='*50}")
+            aktualna_strona = 1
+            puste_strony_pod_rzad = 0
+            blokady_pod_rzad = 0
+            wymus_url = False
+
+            while aktualna_strona <= MAX_PAGES:
+                url = f"{DOMAIN}{marka}/" if aktualna_strona == 1 else f"{DOMAIN}{marka}/page/{aktualna_strona}/"
+
+                try:
+                    start_time = time.time()
+                    bezpieczne_przejscie(page, url, aktualna_strona, bezposrednio=wymus_url)
+                    wymus_url = False
+
+                    page.wait.ele_displayed(SELEKTOR_OFERTY, timeout=8)
+                    html_content = page.html
+                    blokada = wykryj_blokade(page, html_content)
+
+                    if blokada == "cloudflare":
+                        logging.warning("⚠️ Cloudflare analizuje połączenie! Czekam do 15s...")
+                        page.wait.ele_displayed(SELEKTOR_OFERTY, timeout=15)
+                        html_content = page.html
+                        blokada = wykryj_blokade(page, html_content)
+                except Exception as e:
+                    logging.error(f"Błąd połączenia/timeout na stronie {aktualna_strona}: {e}")
+                    time.sleep(5)
+                    wymus_url = True
+                    continue
+
+                if blokada:
+                    blokady_pod_rzad += 1
+                    if blokady_pod_rzad >= MAX_BLOKAD_POD_RZAD:
+                        logging.error(f"❌ {blokady_pod_rzad} blokady pod rząd ({blokada}). Przerywam skrypt - zmień IP/rozwiąż captchę i uruchom ponownie.")
+                        przerwij = True
+                        break
+                    logging.error(f"❌ Blokada ({blokada}), próba {blokady_pod_rzad}/{MAX_BLOKAD_POD_RZAD}. Czekam {PAUZA_BLOKADA_S}s (zmień IP / rozwiąż captchę w przeglądarce).")
+                    time.sleep(PAUZA_BLOKADA_S)
+                    wymus_url = True  # po blokadzie nie szukamy przycisku paginacji, tylko wchodzimy na URL
+                    continue
+                blokady_pod_rzad = 0
+
+                if 'thumbnail offer' not in html_content:
+                    if strona_nie_istnieje(page):
+                        logging.info("Koniec ofert dla tej marki (Błąd 404).")
+                    else:
+                        logging.warning("Brak ofert na stronie (koniec marki lub pusta strona).")
+                    break
+
+                # --- SYMULACJA CZŁOWIEKA PRZED POBRANIEM DANYCH ---
+                page.scroll.to_half()
+                time.sleep(random.uniform(0.5, 1.5))
+                page.scroll.to_bottom()
+                time.sleep(random.uniform(1.0, 2.5))
+                # --------------------------------------------------
+
+                samochody = wyciagnij_dane_z_html(html_content, marka)
+                if not samochody: break
+
+                auta_do_bazy = []
+                aukcje_zbyt_stare_licznik = 0
+
+                for auto in samochody:
+                    data_str = auto['Date_Of_Sale']
+                    if data_str != "Brak":
+                        try:
+                            data_sprzedazy = datetime.strptime(data_str, "%d.%m.%Y")
+                            auto['Date_Of_Sale'] = data_sprzedazy.strftime("%Y-%m-%d")
+                            if data_sprzedazy < DATA_GRANICZNA_POBIERANIA:
+                                aukcje_zbyt_stare_licznik += 1
+                                continue
+                        except ValueError:
+                            # Nieznany format: lepiej "Brak" niż surowy tekst, który psuje porównania dat w czyszczeniu
+                            logging.debug(f"Nieparsowalna data sprzedaży: {data_str!r}")
+                            auto['Date_Of_Sale'] = "Brak"
+
+                    rocznik = auto['Rocznik']
+                    if rocznik is not None and (rocznik < MIN_ROK_PRODUKCJI or rocznik > MAX_ROK_PRODUKCJI):
+                        continue
+
+                    auta_do_bazy.append(auto)
+
+                # Stop decyduje o nowych linkach, a nie o zmianach: cena/stan znanych aut potrafią się zmieniać
+                # na każdej stronie i wtedy "baza aktualna" nigdy by nie zadziałało
+                nowe = policz_nowe_linki(conn, auta_do_bazy)
+                faktycznie_zapisane = wstaw_ogloszenia_hurtowo(conn, auta_do_bazy) if auta_do_bazy else 0
+                czas_wyk = time.time() - start_time
+
+                logging.info(f"[{marka.upper()}-S{aktualna_strona}] Zapisano: {faktycznie_zapisane} (nowe: {nowe}) | (Czas: {czas_wyk:.1f}s)")
+
+                if auta_do_bazy and nowe == 0:
+                    puste_strony_pod_rzad += 1
+                    if puste_strony_pod_rzad >= 3:
+                        logging.info(f"🛑 Baza aktualna (3 strony bez nowych aut). Przechodzę do następnej marki.")
+                        break
+                else:
+                    puste_strony_pod_rzad = 0
+
+                if samochody and aukcje_zbyt_stare_licznik == len(samochody):
+                    logging.info(f"⏰ Dotarto do aukcji starszych niż {DNI_WSTECZ_POBIERANIE} dni. Idę dalej.")
+                    break
+
+                aktualna_strona += 1
+
+            # Czyszczenie po każdej marce, żeby przerwanie skryptu nie zostawiało starych rekordów
+            usun_stare_rekordy(conn)
+            if not przerwij:
+                time.sleep(random.uniform(*PAUZA_MIEDZY_MARKAMI_S))
+
     except KeyboardInterrupt:
         logging.info("Przerwano działanie skryptu skrótem z klawiatury (Ctrl+C).")
     finally:

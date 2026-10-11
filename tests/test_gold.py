@@ -14,6 +14,7 @@ class TestNormalizujMarke:
         (" BMW ", "bmw"),
         ("mclaren-automotive", "mclaren"),
         ("McLaren", "mclaren"),
+        ("lucid-motors", "lucid"),
     ])
     def test_obie_strony_daja_ta_sama_postac(self, marka, expected):
         assert gold.normalizuj_marke(marka) == expected

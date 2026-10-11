@@ -36,7 +36,7 @@ MARKI = [
     Marka('lexus', 'lexus'),
     Marka('lincoln', 'lincoln'),
     Marka('lotus', 'lotus'),
-    Marka('lucid', 'lucid'),
+    Marka('lucid', 'lucid-motors'),
     Marka('maserati', 'maserati'),
     Marka('mazda', 'mazda'),
     Marka('mclaren', 'mclaren-automotive'),
