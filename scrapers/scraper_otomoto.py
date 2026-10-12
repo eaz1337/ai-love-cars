@@ -23,6 +23,9 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+TYP_SPRZEDAWCY_PRYWATNY = "Osoba prywatna"
+TYP_SPRZEDAWCY_FIRMA = "Firma"
+
 WYBRANE_MARKI = MARKI_OTOMOTO  # wspólna lista z Bidfax: scrapers/marki.py
 
 def generuj_url_otomoto(marki):
@@ -31,7 +34,6 @@ def generuj_url_otomoto(marki):
     
     params = {
         "search[filter_enum_registered]": "1",
-        "search[private_business]": "private",
         "search[order]": "created_at_first:desc",
         "search[advanced_search_expanded]": "true"
     }
@@ -43,7 +45,7 @@ def generuj_url_otomoto(marki):
 
 ZADANIA_SCRAPOWANIA = [
     {
-        "nazwa": "Wybrane_Marki_Prywatne",
+        "nazwa": "Wybrane_Marki_Prywatne_i_Firmowe",
         "url_bazowy": generuj_url_otomoto(WYBRANE_MARKI),
     }
 ]
@@ -78,7 +80,7 @@ def get_session():
 # BAZA DANYCH SQLITE (Dodana flaga: Detale_Pobrane)
 # ==============================================================================
 def zainicjalizuj_baze():
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    conn = sqlite3.connect(DB_NAME, timeout=60.0)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS otomoto_scd2 (
@@ -215,7 +217,11 @@ def za_male_pokrycie(widziane, total):
 
 def wyciagnij_dane_ogloszenia(car):
     seller = car.get("seller")
-    seller_name = normalize_nulls(seller.get("name") if isinstance(seller, dict) else None) or "Osoba prywatna"
+    # Typ sprzedawcy podaje __typename ('PrivateSeller' / 'ProfessionalSeller'); nazwa firmy siedzi w sellerLink
+    typ_sprzedawcy = TYP_SPRZEDAWCY_FIRMA if isinstance(seller, dict) and seller.get("__typename") == "ProfessionalSeller" else TYP_SPRZEDAWCY_PRYWATNY
+    seller_link = car.get("sellerLink")
+    nazwa_firmy = normalize_nulls(seller_link.get("name") if isinstance(seller_link, dict) else None)
+    seller_name = nazwa_firmy or normalize_nulls(seller.get("name") if isinstance(seller, dict) else None) or typ_sprzedawcy
     
     price_node = car.get("price") or {}
     amount_node = price_node.get("amount") or {}
@@ -273,7 +279,7 @@ def wyciagnij_dane_ogloszenia(car):
         "Wojewodztwo": normalize_nulls(region),
         "Miejsce": normalize_nulls(miejsce),
         "Czas_publikacji": normalize_nulls(car.get("createdAt")),
-        "Sprzedawca": normalize_nulls(seller_name),
+        "Sprzedawca": typ_sprzedawcy,
         "Nazwa_Sprzedawcy": normalize_nulls(seller_name), 
         "Link": normalize_nulls(car.get("url")),
         "Opis": None,
@@ -768,7 +774,10 @@ def faza_2_uzupelnij_detale(conn):
                     """, (MAX_PROB_DETALI, car_id, NIESKONCZONOSC))
                     nieudane += 1
 
-        conn.commit()
+                # Krótka transakcja: nie trzymamy blokady zapisu podczas czekania na kolejne żądania HTTP
+                # (inaczej Bidfax dostaje "database is locked")
+                conn.commit()
+
         logging.info(f"[FAZA 2] Paczka zakończona! Uzupełniono {uzupelnione} aut. Oznaczono jako wygasłe: {wygasle}. Nieudane (do ponowienia): {nieudane}.")
         time.sleep(5)
 

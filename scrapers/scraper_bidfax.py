@@ -42,7 +42,7 @@ PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
 # ==============================================================================
 def zainicjalizuj_baze():
     # Wydłużony timeout, aby uniknąć błędu "database is locked" (drugi skrypt pisze do tej samej bazy)
-    conn = sqlite3.connect(DB_NAME, timeout=30.0)
+    conn = sqlite3.connect(DB_NAME, timeout=60.0)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bidfax_scd2 (

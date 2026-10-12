@@ -106,3 +106,28 @@ class TestOdfiltrujCenyTechniczne:
     def test_custom_threshold(self):
         df = pd.DataFrame({"Cena_USD": [50, 500]})
         assert list(gold.odfiltruj_ceny_techniczne(df, min_cena=10)["Cena_USD"]) == [50, 500]
+
+
+class TestOdfiltrujUszkodzeniaWykluczone:
+    def test_drops_burn_flood_water_biohazard_variants(self):
+        damage = ["Burn", "Engine Burn", "Total Burn", "Flood", "Water/Flood", "Fresh Water",
+                  "Salt Water", "Biohazard/Chemical", "Front End", "Normal Wear and Tear", None]
+        df = pd.DataFrame({"Damage": damage})
+        assert list(gold.odfiltruj_uszkodzenia_wykluczone(df)["Damage"].fillna("")) == ["Front End", "Normal Wear and Tear", ""]
+
+
+class TestFiltrujSprzedawce:
+    def _df(self):
+        return pd.DataFrame({"Sprzedawca": ["Osoba prywatna", "Firma", "Osoba prywatna"], "Cena_PLN": [1, 2, 3]})
+
+    def test_private_only(self):
+        assert list(gold.filtruj_sprzedawce(self._df(), "Osoba prywatna")["Cena_PLN"]) == [1, 3]
+
+    def test_firma_only(self):
+        assert list(gold.filtruj_sprzedawce(self._df(), "Firma")["Cena_PLN"]) == [2]
+
+    def test_wszyscy_keeps_all(self):
+        assert len(gold.filtruj_sprzedawce(self._df(), "wszyscy")) == 3
+
+    def test_missing_column_keeps_all(self):
+        assert len(gold.filtruj_sprzedawce(self._df().drop(columns="Sprzedawca"), "Firma")) == 3

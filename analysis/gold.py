@@ -29,6 +29,9 @@ TRANSPORT_DO_PL_PLN = 1800
 # Ścieżkę można nadpisać zmienną środowiskową, domyślnie baza leży w katalogu, z którego uruchamiasz skrypt (jak w scraperach)
 DB_PATH = os.environ.get('SAMOCHODY_DB', 'samochody.db')
 
+# Typ sprzedawcy Otomoto branego do cen rynkowych: 'Osoba prywatna', 'Firma' albo 'wszyscy'. Firmy mają zwykle wyższe ceny (marża handlarza)
+SPRZEDAWCA_OTOMOTO = os.environ.get('GOLD_SPRZEDAWCA', 'Osoba prywatna')
+
 # Minimalna liczba aukcji USA i ogłoszeń Otomoto w grupie (marka, model, pojemność, rocznik)
 MIN_AUKCJI_USA = 3
 MIN_OGLOSZEN_OTOMOTO = 3
@@ -103,6 +106,20 @@ def odfiltruj_ceny_techniczne(bidfax, min_cena=MIN_CENA_AUKCJI_USD):
     żeby ostatnia aukcja z placeholderem nie wygrała z wcześniejszą, która ma prawdziwą cenę."""
     return bidfax[pd.to_numeric(bidfax['Cena_USD'], errors='coerce') >= min_cena]
 
+USZKODZENIA_WYKLUCZONE = ('burn', 'biohazard', 'flood', 'water')
+
+def odfiltruj_uszkodzenia_wykluczone(bidfax):
+    """Usuwa aukcje aut spalonych, zalanych i skażonych (Burn, Engine Burn, Flood, Water/Flood, Biohazard...).
+    Dopasowanie po fragmencie, bo Bidfax zapisuje to pod wieloma nazwami."""
+    wzorzec = '|'.join(USZKODZENIA_WYKLUCZONE)
+    return bidfax[~bidfax['Damage'].fillna('').str.contains(wzorzec, case=False, regex=True)]
+
+def filtruj_sprzedawce(otomoto, sprzedawca=SPRZEDAWCA_OTOMOTO):
+    """Zostawia ogłoszenia Otomoto danego typu sprzedawcy (kolumna Sprzedawca); 'wszyscy' niczego nie usuwa."""
+    if sprzedawca.lower() == 'wszyscy' or 'Sprzedawca' not in otomoto.columns:
+        return otomoto
+    return otomoto[otomoto['Sprzedawca'] == sprzedawca]
+
 def extract_capacity_bidfax(title):
     match = re.search(r'(\d\.\d)L', str(title), re.IGNORECASE)
     if match: return round(float(match.group(1)), 1)
@@ -154,6 +171,9 @@ if __name__ == '__main__':
         otomoto_df = otomoto_df[otomoto_df['Is_Outlier'].fillna(0) == 0]
     otomoto_df['Cena_PLN'] = pd.to_numeric(otomoto_df['Cena_PLN'], errors='coerce')
     otomoto_df = otomoto_df[otomoto_df['Cena_PLN'] > 0]
+    przed = len(otomoto_df)
+    otomoto_df = filtruj_sprzedawce(otomoto_df).copy()
+    print(f"ℹ️  Otomoto: pominięto {przed - len(otomoto_df)} ogłoszeń spoza grupy sprzedawców '{SPRZEDAWCA_OTOMOTO}'.")
 
     # --- Bidfax: tylko aukcje z ceną i rocznikiem, jedna sprzedaż na VIN ---
     # Brak ceny lub rocznika to NULL (nie 0), a brak rocznika złączyłby się z 'Rok_produkcji = 0' z Otomoto.
@@ -171,6 +191,10 @@ if __name__ == '__main__':
         bidfax_df[~ma_vin],
         bidfax_df[ma_vin].sort_values('_data_sort').drop_duplicates('VIN', keep='last'),
     ]).drop(columns=['_data_sort'])
+    # Po wyborze ostatniej sprzedaży, żeby auto spalone/zalane na późniejszej aukcji nie wróciło jako wcześniejsza "czysta" sprzedaż
+    przed = len(bidfax_df)
+    bidfax_df = odfiltruj_uszkodzenia_wykluczone(bidfax_df).copy()
+    print(f"ℹ️  Pominięto {przed - len(bidfax_df)} aukcji aut spalonych, zalanych lub skażonych (burn/flood/water/biohazard).")
 
     otomoto_df['Marka'] = otomoto_df['Marka'].map(normalizuj_marke)
     otomoto_df['Model'] = otomoto_df['Model'].astype(str).str.lower().str.strip()

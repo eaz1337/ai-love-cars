@@ -86,6 +86,19 @@ class TestWyciagnijDaneOgloszenia:
     def test_private_seller_default(self):
         assert om.wyciagnij_dane_ogloszenia(_car(seller=None))["Sprzedawca"] == "Osoba prywatna"
 
+    def test_professional_seller_is_firma_with_name(self):
+        d = om.wyciagnij_dane_ogloszenia(_car(seller={"__typename": "ProfessionalSeller"}, sellerLink={"name": "WINCARS"}))
+        assert d["Sprzedawca"] == "Firma"
+        assert d["Nazwa_Sprzedawcy"] == "WINCARS"
+
+    def test_private_seller_typename(self):
+        d = om.wyciagnij_dane_ogloszenia(_car(seller={"__typename": "PrivateSeller"}, sellerLink={"name": None}))
+        assert d["Sprzedawca"] == "Osoba prywatna"
+        assert d["Nazwa_Sprzedawcy"] == "Osoba prywatna"
+
+    def test_url_has_no_private_business_filter(self):
+        assert "private_business" not in om.generuj_url_otomoto(["audi"])
+
     @pytest.mark.parametrize("override", [
         {"price": {"amount": {"value": "500"}}},
         {"price": {"amount": {"value": "2000000"}}},
