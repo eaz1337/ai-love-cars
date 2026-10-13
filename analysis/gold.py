@@ -3,7 +3,10 @@ import numpy as np
 import re
 import sqlite3
 import os
+from datetime import date, datetime
 
+from plynnosc import KOLUMNY_PLYNNOSCI, licz_plynnosc
+from trendy import KOLUMNY_TRENDU, MIN_AUKCJI_W_OKNIE, OKNO_DNI, licz_trendy, zapisz_snapshot
 from koszty import transport_ladowy_usd, wczytaj_koszty
 from slownik import szkic_slownika, wczytaj_slownik, wersja_reczna
 from wersje import WERSJA_PODSTAWOWA, buduj_slownik, nadwozie, tokeny_wersji, uzupelnij_wersje_z_mocy, wersja
@@ -25,6 +28,8 @@ STAWKA_AKCYZY_ELEKTRYCZNE = 0.0   # auta elektryczne są zwolnione z akcyzy
 POJEMNOSC_ELEKTRYCZNE_L = 0.0
 OPLATY_PORTOWE_TUMACZENIA_PLN = 2500
 TRANSPORT_DO_PL_PLN = 1800
+
+TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
 
 # Ścieżkę można nadpisać zmienną środowiskową, domyślnie baza leży w katalogu, z którego uruchamiasz skrypt (jak w scraperach)
 DB_PATH = os.environ.get('SAMOCHODY_DB', 'samochody.db')
@@ -299,6 +304,11 @@ if __name__ == '__main__':
         'count_USA_Kanada': 'Ilosc_USA_Kanada_Otomoto'
     }).reset_index()
 
+    # Płynność liczymy dla aut z USA/Kanady, bo tylko ich ceny trafiają do porównania w analizie
+    klucz_otomoto = ['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rok_produkcji']
+    plynnosc = licz_plynnosc(otomoto_df[otomoto_df['Pochodzenie_Kategoria'] == 'USA_Kanada'], klucz_otomoto)
+    otomoto_agg = otomoto_agg.merge(plynnosc, on=klucz_otomoto, how='left')
+
     bidfax_df['Cena_Zakupu_USA_PLN'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce') * USD_TO_PLN
     koszty_transportu = wczytaj_koszty(KOSZTY_TRANSPORTU)
     bidfax_df['Transport_Ladowy_USD'] = bidfax_df['Lokalizacja'].apply(lambda l: transport_ladowy_usd(l, koszty_transportu))
@@ -327,6 +337,9 @@ if __name__ == '__main__':
     
     usa_agg = usa_agg[usa_agg['Ilosc_Aukcje_USA'] >= MIN_AUKCJI_USA]
 
+    klucz_grupy = ['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik']
+    usa_agg = usa_agg.merge(licz_trendy(bidfax_df, klucz_grupy), on=klucz_grupy, how='left')
+
     gold_layer = pd.merge(usa_agg, otomoto_agg, left_on=['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik'], right_on=['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rok_produkcji'], how='inner')
     gold_layer.drop(columns=['Otomoto_Model'], inplace=True)
 
@@ -349,8 +362,8 @@ if __name__ == '__main__':
 
     base_cols = [
         'Marka', 'Model', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
-        'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN',
-        'Cena_Zakupu_USA_USD', 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
+        'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
+        'Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
         'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%'
     ]
     if 'Ilosc_Krajowe' in gold_layer.columns and 'Cena_Krajowe_PLN' in gold_layer.columns:
@@ -364,7 +377,15 @@ if __name__ == '__main__':
     table_name = 'analiza_rentownosci_usa'
     
     with sqlite3.connect(DB_PATH) as conn:
-        gold_layer.to_sql(table_name, conn, if_exists='replace', index=False)
+        # Tabela jest nadpisywana przy każdym przebiegu, więc data mówi, kiedy dane zostały przeładowane
+        gold_do_zapisu = gold_layer.copy()
+        gold_do_zapisu.insert(0, 'Data_Przeladowania', datetime.now().strftime('%Y-%m-%d %H:%M'))
+        gold_do_zapisu.to_sql(table_name, conn, if_exists='replace', index=False)
+        # Historię marży i trendów trzymamy w osobnym snapshocie z datą
+        zapisano = zapisz_snapshot(conn, TABELA_HISTORII, gold_layer)
+    print(f"ℹ️  Snapshot: dopisano {zapisano} grup do '{TABELA_HISTORII}' ({date.today().isoformat()}).")
+    print(f"ℹ️  Trend ceny USA policzony dla {int(gold_layer['Trend_Ceny_USA_%'].notna().sum())} z {len(gold_layer)} grup "
+          f"(okno {OKNO_DNI} dni, min. {MIN_AUKCJI_W_OKNIE} aukcje w każdym oknie).")
 
     ujemne = int((gold_layer['Budzet_Na_Naprawe_PLN'] < 0).sum())
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")
