@@ -1,0 +1,245 @@
+marka,model,generacja,rok_od,rok_do
+jeep,grand cherokee,WK2,2011,2013
+jeep,grand cherokee,WK2 FL,2014,2021
+jeep,grand cherokee,WL,2022,
+chrysler,pacifica,RU,2017,2020
+chrysler,pacifica,RU FL,2021,
+dodge,charger,LD,2011,2014
+dodge,charger,LD FL,2015,2023
+jeep,wrangler,JK,2007,2010
+jeep,wrangler,JK FL,2011,2017
+jeep,wrangler,JL,2018,
+bmw,seria 3,E90,2005,2008
+bmw,seria 3,E90 LCI,2009,2011
+bmw,seria 3,F30,2012,2014
+bmw,seria 3,F30 LCI,2015,2018
+bmw,seria 3,G20,2019,2021
+bmw,seria 3,G20 LCI,2022,
+chrysler,town & country,RT,2008,2010
+chrysler,town & country,RT FL,2011,2016
+dodge,grand caravan,RT,2008,2010
+dodge,grand caravan,RT FL,2011,2020
+dodge,durango,WD,2011,2013
+dodge,durango,WD FL,2014,2020
+dodge,durango,WD FL2,2021,
+alfa-romeo,stelvio,949,2017,2023
+alfa-romeo,stelvio,949 FL,2024,
+alfa-romeo,giulia,952,2016,2019
+alfa-romeo,giulia,952 FL,2020,
+jeep,cherokee,KL,2014,2018
+jeep,cherokee,KL FL,2019,2023
+audi,q5,8R,2008,2012
+audi,q5,8R FL,2013,2017
+audi,q5,FY,2018,2020
+audi,q5,FY FL,2021,
+audi,sq5,8R FL,2013,2017
+audi,sq5,FY,2018,2020
+audi,sq5,FY FL,2021,
+jeep,compass,MP,2017,2020
+jeep,compass,MP FL,2021,
+bmw,x3,E83,2004,2010
+bmw,x3,F25,2011,2014
+bmw,x3,F25 LCI,2015,2017
+bmw,x3,G01,2018,2021
+bmw,x3,G01 LCI,2022,
+dodge,challenger,LC,2008,2014
+dodge,challenger,LC FL,2015,2023
+audi,q7,4L,2006,2009
+audi,q7,4L FL,2010,2015
+audi,q7,4M,2016,2019
+audi,q7,4M FL,2020,
+porsche,macan,95B,2014,2017
+porsche,macan,95B FL1,2018,2020
+porsche,macan,95B FL2,2021,2023
+porsche,macan,PPE,2024,
+maserati,ghibli,M157,2013,2017
+maserati,ghibli,M157 FL,2018,2020
+maserati,ghibli,M157 FL2,2021,
+mercedes-benz,klasa c,W204,2007,2010
+mercedes-benz,klasa c,W204 FL,2011,2013
+mercedes-benz,klasa c,W205,2014,2018
+mercedes-benz,klasa c,W205 FL,2019,2021
+mercedes-benz,klasa c,W206,2022,
+mercedes-benz,glc,X253,2015,2019
+mercedes-benz,glc,X253 FL,2020,2022
+mercedes-benz,glc,X254,2023,
+infiniti,q50,V37,2014,2017
+infiniti,q50,V37 FL,2018,
+bmw,x5,E70,2007,2009
+bmw,x5,E70 LCI,2010,2013
+bmw,x5,F15,2014,2018
+bmw,x5,G05,2019,2023
+bmw,x5,G05 LCI,2024,
+audi,q3,8U,2011,2014
+audi,q3,8U FL,2015,2018
+audi,q3,F3,2019,2024
+audi,q3,F3 FL,2025,
+mercedes-benz,cla,C117,2013,2016
+mercedes-benz,cla,C117 FL,2017,2019
+mercedes-benz,cla,C118,2020,
+bmw,seria 5,F10,2010,2013
+bmw,seria 5,F10 LCI,2014,2016
+bmw,seria 5,G30,2017,2020
+bmw,seria 5,G30 LCI,2021,2023
+bmw,seria 5,G60,2024,
+dodge,journey,JC,2009,2010
+dodge,journey,JC FL,2011,2020
+honda,cr-v,RE,2007,2011
+honda,cr-v,RM,2012,2014
+honda,cr-v,RM FL,2015,2016
+honda,cr-v,RW,2017,2019
+honda,cr-v,RW FL,2020,2022
+honda,cr-v,RS,2023,
+jaguar,f-pace,X761,2016,2020
+jaguar,f-pace,X761 FL,2021,
+honda,civic,FC,2016,2018
+honda,civic,FC FL,2019,2021
+honda,civic,FE,2022,
+ford,kuga,Mk2,2013,2016
+ford,kuga,Mk2 FL,2017,2019
+ford,kuga,Mk3,2020,2023
+ford,kuga,Mk3 FL,2024,
+mercedes-benz,gla,X156,2014,2017
+mercedes-benz,gla,X156 FL,2018,2020
+mercedes-benz,gla,H247,2021,
+ford,edge,Mk1,2007,2014
+ford,edge,Mk2,2015,2018
+ford,edge,Mk2 FL,2019,2024
+bmw,seria 4,F32,2014,2016
+bmw,seria 4,F32 LCI,2017,2020
+bmw,seria 4,G22,2021,
+ford,explorer,U502,2011,2015
+ford,explorer,U502 FL,2016,2019
+ford,explorer,U625,2020,
+mercedes-benz,klasa e,W212,2009,2013
+mercedes-benz,klasa e,W212 FL,2014,2016
+mercedes-benz,klasa e,W213,2017,2020
+mercedes-benz,klasa e,W213 FL,2021,2023
+mercedes-benz,klasa e,W214,2024,
+chevrolet,camaro,Gen5,2010,2013
+chevrolet,camaro,Gen5 FL,2014,2015
+chevrolet,camaro,Gen6,2016,2018
+chevrolet,camaro,Gen6 FL,2019,
+ford,mustang,S197,2005,2014
+ford,mustang,S550,2015,2017
+ford,mustang,S550 FL,2018,2023
+ford,mustang,S650,2024,
+infiniti,qx60,L50,2013,2015
+infiniti,qx60,L50 FL,2016,2020
+infiniti,qx60,L50 FL2,2021,
+porsche,cayenne,958,2011,2014
+porsche,cayenne,958 FL,2015,2017
+porsche,cayenne,9YA,2018,2023
+porsche,cayenne,9YA FL,2024,
+land-rover,discovery sport,L550,2015,2019
+land-rover,discovery sport,L550 FL,2020,
+bmw,x1,E84,2009,2012
+bmw,x1,E84 LCI,2013,2015
+bmw,x1,F48,2016,2019
+bmw,x1,F48 LCI,2020,2022
+bmw,x1,U11,2023,
+mercedes-benz,glk,X204,2008,2012
+mercedes-benz,glk,X204 FL,2013,2015
+chrysler,200,Gen1,2011,2014
+chrysler,200,Gen2,2015,2017
+mercedes-benz,glb,X247,2020,2023
+mercedes-benz,glb,X247 FL,2024,
+ford,focus,Mk3,2011,2014
+ford,focus,Mk3 FL,2015,2018
+ford,focus,Mk4,2019,
+maserati,levante,M161,2016,2020
+maserati,levante,M161 FL,2021,
+jeep,liberty,KK,2008,2012
+hyundai,tucson,TL,2016,2018
+hyundai,tucson,TL FL,2019,2020
+hyundai,tucson,NX4,2021,2023
+hyundai,tucson,NX4 FL,2024,
+jeep,renegade,BU,2015,2018
+jeep,renegade,BU FL,2019,
+mitsubishi,outlander,GF,2012,2015
+mitsubishi,outlander,GF FL,2016,2018
+mitsubishi,outlander,GF FL2,2019,2021
+mitsubishi,outlander,GN,2022,
+mercedes-benz,klasa a,W177,2018,2022
+mercedes-benz,klasa a,W177 FL,2023,
+mercedes-benz,klasa s,W221,2005,2009
+mercedes-benz,klasa s,W221 FL,2010,2013
+mercedes-benz,klasa s,W222,2014,2017
+mercedes-benz,klasa s,W222 FL,2018,2020
+mercedes-benz,klasa s,W223,2021,
+ford,f150,Gen12,2009,2014
+ford,f150,Gen13,2015,2017
+ford,f150,Gen13 FL,2018,2020
+ford,f150,Gen14,2021,
+lexus,nx,AZ10,2014,2017
+lexus,nx,AZ10 FL,2018,2021
+lexus,nx,AZ20,2022,
+ford,ecosport,B515,2013,2017
+ford,ecosport,B515 FL,2018,2022
+ford,mondeo,Mk5,2015,2018
+ford,mondeo,Mk5 FL,2019,2022
+land-rover,range rover,L405,2013,2017
+land-rover,range rover,L405 FL,2018,2021
+land-rover,range rover,L460,2022,
+jaguar,xe,X760,2015,2019
+jaguar,xe,X760 FL,2020,
+mercedes-benz,gls,X166,2016,2019
+mercedes-benz,gls,X167,2020,
+mercedes-benz,gl,X164,2007,2012
+mercedes-benz,gl,X166,2013,2015
+audi,q8,4M8,2018,
+chevrolet,corvette,C6,2005,2013
+chevrolet,corvette,C7,2014,2019
+chevrolet,corvette,C8,2020,
+porsche,panamera,970,2010,2013
+porsche,panamera,970 FL,2014,2016
+porsche,panamera,971,2017,2023
+porsche,panamera,971 FL,2024,
+jeep,gladiator,JT,2020,
+mitsubishi,eclipse cross,GK,2018,2020
+mitsubishi,eclipse cross,GK FL,2021,
+bmw,x2,F39,2018,2023
+bmw,x2,U10,2024,
+audi,a5 sportback,8T,2010,2011
+audi,a5 sportback,8T FL,2012,2016
+audi,a5 sportback,F5,2017,2019
+audi,a5 sportback,F5 FL,2020,2023
+audi,a5 sportback,B10,2024,
+bmw,m4,F82,2014,2017
+bmw,m4,F82 LCI,2018,2020
+bmw,m4,G82,2021,
+hyundai,santa fe,DM,2013,2015
+hyundai,santa fe,DM FL,2016,2018
+hyundai,santa fe,TM,2019,2020
+hyundai,santa fe,TM FL,2021,2023
+hyundai,santa fe,MX5,2024,
+jeep,wagoneer,WS,2022,
+jeep,grand wagoneer,WS,2022,
+audi,s3,8V,2013,2016
+audi,s3,8V FL,2017,2020
+audi,s3,8Y,2021,
+infiniti,qx50,J50,2013,2017
+infiniti,qx50,J55,2018,
+land-rover,range rover evoque,L538,2011,2015
+land-rover,range rover evoque,L538 FL,2016,2018
+land-rover,range rover evoque,L551,2019,
+kia,stinger,CK,2017,2020
+kia,stinger,CK FL,2021,
+bmw,x6,E71,2008,2014
+bmw,x6,F16,2015,2019
+bmw,x6,G06,2020,
+mercedes-benz,gle,W166,2015,2018
+mercedes-benz,gle,V167,2019,2023
+mercedes-benz,gle,V167 FL,2024,
+land-rover,range rover velar,L560,2017,2020
+land-rover,range rover velar,L560 FL,2021,
+audi,a4 allroad,B8,2009,2011
+audi,a4 allroad,B8 FL,2012,2015
+audi,a4 allroad,B9,2016,2019
+audi,a4 allroad,B9 FL,2020,
+porsche,911,997.1,2005,2008
+porsche,911,997.2,2009,2011
+porsche,911,991.1,2012,2015
+porsche,911,991.2,2016,2018
+porsche,911,992.1,2019,2023
+porsche,911,992.2,2024,

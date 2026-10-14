@@ -5,6 +5,7 @@ import sqlite3
 import os
 from datetime import date, datetime
 
+from generacje import dodaj_generacje, wczytaj_generacje
 from plynnosc import KOLUMNY_PLYNNOSCI, licz_plynnosc
 from trendy import KOLUMNY_TRENDU, MIN_AUKCJI_W_OKNIE, OKNO_DNI, licz_trendy, zapisz_snapshot
 from koszty import transport_ladowy_usd, wczytaj_koszty
@@ -43,6 +44,8 @@ MIN_OGLOSZEN_OTOMOTO = 3
 
 # Rozdzielaj grupy też po wersji (S / GTS / Turbo...), patrz wersje.py. Wyłączenie daje stare, grubsze grupy
 UZYWAJ_WERSJI = os.environ.get('GOLD_WERSJE', '1') != '0'
+# Generacje z liftami (patrz generacje.py): ręczny plik ma pierwszeństwo przed generacjami z Otomoto
+PLIK_GENERACJI = os.environ.get('GOLD_GENERACJE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generacje.csv'))
 # Ręczny słownik wersji (patrz slownik.py), ma pierwszeństwo przed wyuczonym dla modeli, które w nim są
 SLOWNIK_WERSJI = os.environ.get('GOLD_SLOWNIK_WERSJI', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'slownik_wersji.csv'))
 
@@ -342,6 +345,9 @@ if __name__ == '__main__':
 
     gold_layer = pd.merge(usa_agg, otomoto_agg, left_on=['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik'], right_on=['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rok_produkcji'], how='inner')
     gold_layer.drop(columns=['Otomoto_Model'], inplace=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        slownik_generacji = wczytaj_generacje(conn, normalizuj_marke, PLIK_GENERACJI)
+    gold_layer['Generacja'] = dodaj_generacje(gold_layer, 'Marka', 'Model', 'Rocznik', slownik_generacji)
 
     # NOWOŚĆ: Usuwamy wiersze, dla których brakuje ceny referencyjnej z Otomoto (zapobiega to liczeniu na NULLach)
     gold_layer = gold_layer.dropna(subset=['Cena_USA_Kanada_Otomoto_PLN'])
@@ -361,7 +367,7 @@ if __name__ == '__main__':
     assert (gold_layer['Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
 
     base_cols = [
-        'Marka', 'Model', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
+        'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
         'Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
         'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%'
@@ -386,6 +392,9 @@ if __name__ == '__main__':
     print(f"ℹ️  Snapshot: dopisano {zapisano} grup do '{TABELA_HISTORII}' ({date.today().isoformat()}).")
     print(f"ℹ️  Trend ceny USA policzony dla {int(gold_layer['Trend_Ceny_USA_%'].notna().sum())} z {len(gold_layer)} grup "
           f"(okno {OKNO_DNI} dni, min. {MIN_AUKCJI_W_OKNIE} aukcje w każdym oknie).")
+
+    bez_generacji = int((gold_layer['Generacja'] == 'brak').sum())
+    print(f"ℹ️  Generacja: {len(gold_layer) - bez_generacji} z {len(gold_layer)} grup przypisano ({len(slownik_generacji)} modeli w słowniku).")
 
     ujemne = int((gold_layer['Budzet_Na_Naprawe_PLN'] < 0).sum())
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")
