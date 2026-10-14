@@ -26,5 +26,6 @@ RUN chmod +x /usr/local/bin/bidfax-entrypoint.sh
 
 # Baza (samochody.db) powstaje w bieżącym katalogu, czyli w wolumenie /data
 WORKDIR /data
+ENV SAMOCHODY_DB=/data/samochody.db
 VOLUME /data
 CMD ["python", "/app/scrapers/scraper_otomoto.py"]

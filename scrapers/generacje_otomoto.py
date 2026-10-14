@@ -6,6 +6,7 @@ Generacje służą do grupowania roczników w analizie (patrz analysis/generacje
 
 Uruchomienie: python generacje_otomoto.py   (pomija modele pobrane w ciągu ostatnich ODSWIEZ_DNI dni)
 """
+import os
 import logging
 import random
 import re
@@ -20,7 +21,8 @@ from curl_cffi import requests as cffi_requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-DB_NAME = "samochody.db"
+# Baza leży w roocie repo niezależnie od katalogu, z którego uruchamiasz skrypt (SAMOCHODY_DB nadpisuje, tak robi Docker)
+DB_NAME = os.environ.get("SAMOCHODY_DB") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samochody.db")
 TABELA = "generacje_otomoto"
 MIN_OGLOSZEN_MODELU = 30    # rzadkie modele nie trafiają do analizy, szkoda na nie requestów
 ODSWIEZ_DNI = 90            # generacje zmieniają się rzadko

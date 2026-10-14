@@ -1,3 +1,4 @@
+import os
 import json
 import re
 import time
@@ -50,7 +51,8 @@ ZADANIA_SCRAPOWANIA = [
     }
 ]
 
-DB_NAME = "samochody.db"
+# Baza leży w roocie repo niezależnie od katalogu, z którego uruchamiasz skrypt (SAMOCHODY_DB nadpisuje, tak robi Docker)
+DB_NAME = os.environ.get("SAMOCHODY_DB") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samochody.db")
 statystyki_blokad = {"ilosc_blokad": 0, "ilosc_rotacji_vpn": 0}
 vpn_lock = threading.Lock()
 stat_lock = threading.Lock()

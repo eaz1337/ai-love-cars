@@ -1,3 +1,4 @@
+import os
 import time
 import random
 import sqlite3
@@ -12,7 +13,8 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 # ==============================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-DB_NAME = "samochody.db"
+# Baza leży w roocie repo niezależnie od katalogu, z którego uruchamiasz skrypt (SAMOCHODY_DB nadpisuje, tak robi Docker)
+DB_NAME = os.environ.get("SAMOCHODY_DB") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samochody.db")
 DOMAIN = "https://en.bidfax.info/"
 MAX_PAGES = 99
 

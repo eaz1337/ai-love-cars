@@ -5,6 +5,7 @@ venv/
 *.db
 *.db-shm
 *.db-wal
+*.db.przed_scaleniem_*
 
 # Browser profiles used by DrissionPage
 czysty_profil_bidfax/

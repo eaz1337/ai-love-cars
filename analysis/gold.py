@@ -32,8 +32,8 @@ TRANSPORT_DO_PL_PLN = 1800
 
 TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
 
-# Ścieżkę można nadpisać zmienną środowiskową, domyślnie baza leży w katalogu, z którego uruchamiasz skrypt (jak w scraperach)
-DB_PATH = os.environ.get('SAMOCHODY_DB', 'samochody.db')
+# Baza leży w roocie repo niezależnie od katalogu uruchomienia (jak w scraperach); SAMOCHODY_DB nadpisuje ścieżkę
+DB_PATH = os.environ.get('SAMOCHODY_DB') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'samochody.db')
 
 # Typ sprzedawcy Otomoto branego do cen rynkowych: 'Osoba prywatna', 'Firma' albo 'wszyscy'. Firmy mają zwykle wyższe ceny (marża handlarza)
 SPRZEDAWCA_OTOMOTO = os.environ.get('GOLD_SPRZEDAWCA', 'Osoba prywatna')
