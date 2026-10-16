@@ -45,6 +45,11 @@ MIN_OGLOSZEN_OTOMOTO = 3
 # Grupa bez rozpoznanej wersji ('podstawowa') z takim rozrzutem cen Otomoto ((q90 - q10) / mediana) miesza prawdopodobnie
 # kilka wersji wyposażenia, więc jej marża jest niepewna. Takie grupy lądują na końcu rankingu z flagą Niepewna_Wersja
 MAX_ROZRZUT_CEN_OTOMOTO = 0.30
+# Wiarygodność grupy z liczby próbek (aukcje USA, ogłoszenia Otomoto z USA/Kanady): (min. aukcji, min. ogłoszeń) -> etykieta.
+# Niska nie jest wycinana, bo egzotyki mają po kilka sztuk; tabela tylko ją oznacza i sortuje niżej
+WIARYGODNOSC_PROGI = [(10, 5, 'wysoka'), (5, 3, 'srednia')]
+WIARYGODNOSC_NISKA = 'niska'
+WIARYGODNOSC_KOLEJNOSC = ['wysoka', 'srednia', 'niska']
 # Cechy, po których dwa ogłoszenia Otomoto to to samo auto wystawione dwa razy pod różnymi ID
 KLUCZ_DUPLIKATU_OTOMOTO = ['Marka', 'Model', 'Tytul', 'Rok_produkcji', 'Cena_PLN', 'Przebieg_km', 'Pojemnosc_cm3', 'Moc_KM', 'Nazwa_Sprzedawcy']
 
@@ -137,6 +142,13 @@ def usun_duplikaty_ogloszen(otomoto, klucz=KLUCZ_DUPLIKATU_OTOMOTO):
 def oznacz_niepewne_wersje(grupy, rozrzut_proc, wersja_podstawowa=WERSJA_PODSTAWOWA, max_rozrzut=MAX_ROZRZUT_CEN_OTOMOTO):
     """Kolumna 0/1: grupa bez rozpoznanej wersji, której ceny Otomoto są mocno rozrzucone (rozrzut w %, brak = 0)."""
     return ((grupy['Wersja'] == wersja_podstawowa) & (rozrzut_proc.fillna(0) > max_rozrzut * 100)).astype(int)
+
+def oznacz_wiarygodnosc(aukcje, ogloszenia, progi=WIARYGODNOSC_PROGI):
+    """'wysoka' / 'srednia' / 'niska' z liczby aukcji USA i ogłoszeń Otomoto (pierwszy próg, który oba warunki spełnia)."""
+    wynik = pd.Series(WIARYGODNOSC_NISKA, index=aukcje.index)
+    for min_aukcji, min_ogloszen, etykieta in reversed(progi):
+        wynik[(aukcje >= min_aukcji) & (ogloszenia >= min_ogloszen)] = etykieta
+    return wynik
 
 def filtruj_sprzedawce(otomoto, sprzedawca=SPRZEDAWCA_OTOMOTO):
     """Zostawia ogłoszenia Otomoto danego typu sprzedawcy (kolumna Sprzedawca); 'wszyscy' niczego nie usuwa."""
@@ -390,13 +402,15 @@ if __name__ == '__main__':
 
     gold_layer['Niepewna_Wersja'] = oznacz_niepewne_wersje(gold_layer, gold_layer['Rozrzut_Cen_Otomoto_%'])
 
+    gold_layer['Wiarygodnosc'] = oznacz_wiarygodnosc(gold_layer['Ilosc_Aukcje_USA'], gold_layer['Ilosc_USA_Kanada_Otomoto'])
+
     assert (gold_layer['Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
 
     base_cols = [
         'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
         'Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
-        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja'
+        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Wiarygodnosc'
     ]
     if 'Ilosc_Krajowe' in gold_layer.columns and 'Cena_Krajowe_PLN' in gold_layer.columns:
         base_cols.insert(7, 'Ilosc_Krajowe')
@@ -404,8 +418,11 @@ if __name__ == '__main__':
 
     final_cols = [col for col in base_cols if col in gold_layer.columns]
     
-    # Grupy o niepewnej wersji na końcu, żeby zmieszane wersje nie otwierały rankingu
-    gold_layer = gold_layer[final_cols].sort_values(by=['Niepewna_Wersja', 'Budzet_Na_Naprawe_%'], ascending=[True, False]).round(1)
+    # Na końcu rankingu: grupy ze zmieszanymi wersjami, potem te z małą próbką (w obrębie wiarygodności sortuje marża)
+    gold_layer = gold_layer[final_cols]
+    kolejnosc = gold_layer['Wiarygodnosc'].map(WIARYGODNOSC_KOLEJNOSC.index)
+    gold_layer = gold_layer.assign(_kol=kolejnosc).sort_values(
+        by=['Niepewna_Wersja', '_kol', 'Budzet_Na_Naprawe_%'], ascending=[True, True, False]).drop(columns='_kol').round(1)
     
     table_name = 'analiza_rentownosci_usa'
     
@@ -425,4 +442,5 @@ if __name__ == '__main__':
 
     ujemne = int((gold_layer['Budzet_Na_Naprawe_PLN'] < 0).sum())
     print(f"ℹ️  Niepewna wersja (podstawowa, rozrzut cen Otomoto > {MAX_ROZRZUT_CEN_OTOMOTO:.0%}): {int(gold_layer['Niepewna_Wersja'].sum())} grup, na końcu rankingu.")
+    print("ℹ️  Wiarygodność: " + ", ".join(f"{e} {int((gold_layer['Wiarygodnosc'] == e).sum())}" for e in WIARYGODNOSC_KOLEJNOSC) + ".")
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")

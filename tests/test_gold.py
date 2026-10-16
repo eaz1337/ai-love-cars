@@ -156,3 +156,14 @@ class TestOznaczNiepewneWersje:
         grupy = pd.DataFrame({"Wersja": ["podstawowa", "podstawowa", "laramie", "podstawowa"]})
         rozrzut = pd.Series([45.0, 10.0, 80.0, None])
         assert list(gold.oznacz_niepewne_wersje(grupy, rozrzut)) == [1, 0, 0, 0]
+
+
+class TestOznaczWiarygodnosc:
+    def test_levels_from_both_counts(self):
+        aukcje = pd.Series([10, 12, 5, 9, 3, 50, 4])
+        ogloszenia = pd.Series([5, 4, 3, 5, 3, 2, 30])
+        assert list(gold.oznacz_wiarygodnosc(aukcje, ogloszenia)) == ["wysoka", "srednia", "srednia", "srednia", "niska", "niska", "niska"]
+
+    def test_rare_exotic_is_kept_as_low_not_dropped(self):
+        wynik = gold.oznacz_wiarygodnosc(pd.Series([3]), pd.Series([3]))
+        assert list(wynik) == ["niska"]
