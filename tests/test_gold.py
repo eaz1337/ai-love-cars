@@ -131,3 +131,28 @@ class TestFiltrujSprzedawce:
 
     def test_missing_column_keeps_all(self):
         assert len(gold.filtruj_sprzedawce(self._df().drop(columns="Sprzedawca"), "Firma")) == 3
+
+
+class TestUsunDuplikatyOgloszen:
+    def _df(self, **zmiany):
+        baza = {"Marka": "ram", "Model": "1500", "Tytul": "RAM 1500 Rebel", "Rok_produkcji": 2023, "Cena_PLN": 226600,
+                "Przebieg_km": 63000, "Pojemnosc_cm3": 5654, "Moc_KM": 401, "Nazwa_Sprzedawcy": "Auto sp. z o.o."}
+        return pd.DataFrame([{**baza, "ID_Ogloszenia": "a"}, {**baza, **zmiany, "ID_Ogloszenia": "b"}])
+
+    def test_same_car_under_two_ids_counts_once_and_keeps_latest(self):
+        wynik = gold.usun_duplikaty_ogloszen(self._df())
+        assert list(wynik["ID_Ogloszenia"]) == ["b"]
+
+    @pytest.mark.parametrize("zmiana", [{"Cena_PLN": 219000}, {"Przebieg_km": 64000}, {"Nazwa_Sprzedawcy": "Inna firma"}])
+    def test_different_price_mileage_or_seller_is_a_different_car(self, zmiana):
+        assert len(gold.usun_duplikaty_ogloszen(self._df(**zmiana))) == 2
+
+    def test_missing_seller_name_still_dedupes(self):
+        assert len(gold.usun_duplikaty_ogloszen(self._df(Nazwa_Sprzedawcy=None).assign(Nazwa_Sprzedawcy=None))) == 1
+
+
+class TestOznaczNiepewneWersje:
+    def test_flags_only_basic_version_with_wide_price_spread(self):
+        grupy = pd.DataFrame({"Wersja": ["podstawowa", "podstawowa", "laramie", "podstawowa"]})
+        rozrzut = pd.Series([45.0, 10.0, 80.0, None])
+        assert list(gold.oznacz_niepewne_wersje(grupy, rozrzut)) == [1, 0, 0, 0]

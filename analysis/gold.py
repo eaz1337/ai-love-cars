@@ -42,6 +42,12 @@ SPRZEDAWCA_OTOMOTO = os.environ.get('GOLD_SPRZEDAWCA', 'Osoba prywatna')
 MIN_AUKCJI_USA = 3
 MIN_OGLOSZEN_OTOMOTO = 3
 
+# Grupa bez rozpoznanej wersji ('podstawowa') z takim rozrzutem cen Otomoto ((q90 - q10) / mediana) miesza prawdopodobnie
+# kilka wersji wyposażenia, więc jej marża jest niepewna. Takie grupy lądują na końcu rankingu z flagą Niepewna_Wersja
+MAX_ROZRZUT_CEN_OTOMOTO = 0.30
+# Cechy, po których dwa ogłoszenia Otomoto to to samo auto wystawione dwa razy pod różnymi ID
+KLUCZ_DUPLIKATU_OTOMOTO = ['Marka', 'Model', 'Tytul', 'Rok_produkcji', 'Cena_PLN', 'Przebieg_km', 'Pojemnosc_cm3', 'Moc_KM', 'Nazwa_Sprzedawcy']
+
 # Rozdzielaj grupy też po wersji (S / GTS / Turbo...), patrz wersje.py. Wyłączenie daje stare, grubsze grupy
 UZYWAJ_WERSJI = os.environ.get('GOLD_WERSJE', '1') != '0'
 # Generacje z liftami (patrz generacje.py): ręczny plik ma pierwszeństwo przed generacjami z Otomoto
@@ -122,6 +128,16 @@ def odfiltruj_uszkodzenia_wykluczone(bidfax):
     wzorzec = '|'.join(USZKODZENIA_WYKLUCZONE)
     return bidfax[~bidfax['Damage'].fillna('').str.contains(wzorzec, case=False, regex=True)]
 
+def usun_duplikaty_ogloszen(otomoto, klucz=KLUCZ_DUPLIKATU_OTOMOTO):
+    """To samo auto wystawione ponownie pod nowym ID (ta sama cena, przebieg, tytuł i sprzedawca) liczy się raz,
+    inaczej zawyża liczebność grupy i wagę swojej ceny w medianie. Zostaje najnowsze ogłoszenie (ostatni wiersz)."""
+    klucz = [k for k in klucz if k in otomoto.columns]
+    return otomoto.drop_duplicates(klucz, keep='last')
+
+def oznacz_niepewne_wersje(grupy, rozrzut_proc, wersja_podstawowa=WERSJA_PODSTAWOWA, max_rozrzut=MAX_ROZRZUT_CEN_OTOMOTO):
+    """Kolumna 0/1: grupa bez rozpoznanej wersji, której ceny Otomoto są mocno rozrzucone (rozrzut w %, brak = 0)."""
+    return ((grupy['Wersja'] == wersja_podstawowa) & (rozrzut_proc.fillna(0) > max_rozrzut * 100)).astype(int)
+
 def filtruj_sprzedawce(otomoto, sprzedawca=SPRZEDAWCA_OTOMOTO):
     """Zostawia ogłoszenia Otomoto danego typu sprzedawcy (kolumna Sprzedawca); 'wszyscy' niczego nie usuwa."""
     if sprzedawca.lower() == 'wszyscy' or 'Sprzedawca' not in otomoto.columns:
@@ -179,6 +195,9 @@ if __name__ == '__main__':
         otomoto_df = otomoto_df[otomoto_df['Is_Outlier'].fillna(0) == 0]
     otomoto_df['Cena_PLN'] = pd.to_numeric(otomoto_df['Cena_PLN'], errors='coerce')
     otomoto_df = otomoto_df[otomoto_df['Cena_PLN'] > 0]
+    przed = len(otomoto_df)
+    otomoto_df = usun_duplikaty_ogloszen(otomoto_df)
+    print(f"ℹ️  Otomoto: pominięto {przed - len(otomoto_df)} ogłoszeń tego samego auta wystawionych pod innym ID.")
     przed = len(otomoto_df)
     otomoto_df = filtruj_sprzedawce(otomoto_df).copy()
     print(f"ℹ️  Otomoto: pominięto {przed - len(otomoto_df)} ogłoszeń spoza grupy sprzedawców '{SPRZEDAWCA_OTOMOTO}'.")
@@ -312,6 +331,11 @@ if __name__ == '__main__':
     plynnosc = licz_plynnosc(otomoto_df[otomoto_df['Pochodzenie_Kategoria'] == 'USA_Kanada'], klucz_otomoto)
     otomoto_agg = otomoto_agg.merge(plynnosc, on=klucz_otomoto, how='left')
 
+    # Rozrzut cen aut z USA/Kanady w grupie: wysoki przy 'podstawowa' znaczy, że w grupie siedzi kilka wersji wyposażenia
+    ceny_usa = otomoto_df[otomoto_df['Pochodzenie_Kategoria'] == 'USA_Kanada'].groupby(klucz_otomoto)['Cena_PLN']
+    rozrzut = ((ceny_usa.quantile(0.9) - ceny_usa.quantile(0.1)) / ceny_usa.median() * 100).rename('Rozrzut_Cen_Otomoto_%').reset_index()
+    otomoto_agg = otomoto_agg.merge(rozrzut, on=klucz_otomoto, how='left')
+
     bidfax_df['Cena_Zakupu_USA_PLN'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce') * USD_TO_PLN
     koszty_transportu = wczytaj_koszty(KOSZTY_TRANSPORTU)
     bidfax_df['Transport_Ladowy_USD'] = bidfax_df['Lokalizacja'].apply(lambda l: transport_ladowy_usd(l, koszty_transportu))
@@ -364,13 +388,15 @@ if __name__ == '__main__':
     gold_layer['Budzet_Na_Naprawe_PLN'] = gold_layer['Cena_USA_Kanada_Otomoto_PLN'] - gold_layer['Koszt_Import_PLN']
     gold_layer['Budzet_Na_Naprawe_%'] = (gold_layer['Budzet_Na_Naprawe_PLN'] / gold_layer['Cena_USA_Kanada_Otomoto_PLN'] * 100).round(1)
 
+    gold_layer['Niepewna_Wersja'] = oznacz_niepewne_wersje(gold_layer, gold_layer['Rozrzut_Cen_Otomoto_%'])
+
     assert (gold_layer['Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
 
     base_cols = [
         'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
         'Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
-        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%'
+        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja'
     ]
     if 'Ilosc_Krajowe' in gold_layer.columns and 'Cena_Krajowe_PLN' in gold_layer.columns:
         base_cols.insert(7, 'Ilosc_Krajowe')
@@ -378,7 +404,8 @@ if __name__ == '__main__':
 
     final_cols = [col for col in base_cols if col in gold_layer.columns]
     
-    gold_layer = gold_layer[final_cols].sort_values(by='Budzet_Na_Naprawe_%', ascending=False).round(1)
+    # Grupy o niepewnej wersji na końcu, żeby zmieszane wersje nie otwierały rankingu
+    gold_layer = gold_layer[final_cols].sort_values(by=['Niepewna_Wersja', 'Budzet_Na_Naprawe_%'], ascending=[True, False]).round(1)
     
     table_name = 'analiza_rentownosci_usa'
     
@@ -397,4 +424,5 @@ if __name__ == '__main__':
     print(f"ℹ️  Generacja: {len(gold_layer) - bez_generacji} z {len(gold_layer)} grup przypisano ({len(slownik_generacji)} modeli w słowniku).")
 
     ujemne = int((gold_layer['Budzet_Na_Naprawe_PLN'] < 0).sum())
+    print(f"ℹ️  Niepewna wersja (podstawowa, rozrzut cen Otomoto > {MAX_ROZRZUT_CEN_OTOMOTO:.0%}): {int(gold_layer['Niepewna_Wersja'].sum())} grup, na końcu rankingu.")
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")

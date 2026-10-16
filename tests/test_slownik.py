@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 import slownik
+import wersje
 from wersje import WERSJA_PODSTAWOWA
 
 CSV = """marka,model,wersja,slowa,zakaz_slow,moc_od,moc_do,pojemnosc_od,pojemnosc_do,rok_od,rok_do
@@ -108,3 +109,34 @@ def test_szkic_slownika():
     assert list(szkic["wersja"]) == ["gts"]
     assert szkic["n_ogloszen_otomoto"].iloc[0] == 4
     assert 400 <= szkic["moc_od"].iloc[0] <= szkic["moc_do"].iloc[0] <= 430
+
+
+class TestSlownikRam1500:
+    """Wersje Rama 1500 z analysis/slownik_wersji.csv: Classic to inna (starsza) generacja, a wersje wyposażenia mocno różnią cenę."""
+
+    @pytest.fixture(scope="class")
+    def wpisy(self):
+        import os
+        sciezka = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "analysis", "slownik_wersji.csv")
+        return slownik.wczytaj_slownik(sciezka)[("ram", "1500")]
+
+    @pytest.mark.parametrize("tytul,oczekiwana", [
+        ("1500 Classic Tradesman 4X4 5'7 Box", "classic"),
+        ("1500 Classic Slt", "classic"),
+        ("1500 Tradesman 4X4 6'4 Box", "tradesman"),
+        ("1500 St", "tradesman"),
+        ("1500 Big Horn/Lone Star", "big horn"),
+        ("RAM 1500 5.7 Crew Cab Bighorn", "big horn"),
+        ("1500 Slt", "big horn"),
+        ("RAM 1500 Crew Cab Sport", "big horn"),
+        ("1500 Laramie 4X4 5'7 Box", "laramie"),
+        ("RAM 1500 5.7 Crew Cab Longbed Laramie Sport", "laramie"),
+        ("1500 Laramie Longhorn", "longhorn"),
+        ("RAM 1500 Crew Cab Limited", "limited"),
+        ("RAM 1500 Limited Longhorn", "longhorn"),
+        ("1500 Rebel 4X4 5'7 Box", "rebel"),
+        ("RAM 1500", "podstawowa"),
+    ])
+    def test_wersja(self, wpisy, tytul, oczekiwana):
+        tokeny = wersje.tokeny_wersji(tytul, ("ram", "1500"))
+        assert slownik.wersja_reczna(tokeny, wpisy) == oczekiwana
