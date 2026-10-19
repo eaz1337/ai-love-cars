@@ -50,8 +50,13 @@ MAX_ROZRZUT_CEN_OTOMOTO = 0.30
 WIARYGODNOSC_PROGI = [(10, 5, 'wysoka'), (5, 3, 'srednia')]
 WIARYGODNOSC_NISKA = 'niska'
 WIARYGODNOSC_KOLEJNOSC = ['wysoka', 'srednia', 'niska']
-# Cechy, po których dwa ogłoszenia Otomoto to to samo auto wystawione dwa razy pod różnymi ID
-KLUCZ_DUPLIKATU_OTOMOTO = ['Marka', 'Model', 'Tytul', 'Rok_produkcji', 'Cena_PLN', 'Przebieg_km', 'Pojemnosc_cm3', 'Moc_KM', 'Nazwa_Sprzedawcy']
+# Cechy, po których dwa ogłoszenia Otomoto to to samo auto wystawione dwa razy pod różnymi ID. Bez ceny i tytułu (przy ponownym
+# wystawieniu sprzedawcy zmieniają jedno i drugie); przebieg porównujemy z tolerancją, bo auto jeżdżące na co dzień ma go większy
+KLUCZ_DUPLIKATU_OTOMOTO = ['Marka', 'Model', 'Nazwa_Sprzedawcy', 'Rok_produkcji', 'Paliwo', 'Skrzynia_biegow', 'Miasto']
+# Do tylu km różnicy przebiegu to to samo auto (ok. 800 km/mies. przy ogłoszeniach dzielonych średnio ok. 19 dniami); od ok. 10 000 km
+# to już dwa różne auta tego samego sprzedawcy wystawione w tym samym czasie
+TOLERANCJA_PRZEBIEGU_KM = 3000
+SPRZEDAWCA_PRYWATNY = 'Osoba prywatna'
 
 # Rozdzielaj grupy też po wersji (S / GTS / Turbo...), patrz wersje.py. Wyłączenie daje stare, grubsze grupy
 UZYWAJ_WERSJI = os.environ.get('GOLD_WERSJE', '1') != '0'
@@ -133,11 +138,23 @@ def odfiltruj_uszkodzenia_wykluczone(bidfax):
     wzorzec = '|'.join(USZKODZENIA_WYKLUCZONE)
     return bidfax[~bidfax['Damage'].fillna('').str.contains(wzorzec, case=False, regex=True)]
 
-def usun_duplikaty_ogloszen(otomoto, klucz=KLUCZ_DUPLIKATU_OTOMOTO):
-    """To samo auto wystawione ponownie pod nowym ID (ta sama cena, przebieg, tytuł i sprzedawca) liczy się raz,
-    inaczej zawyża liczebność grupy i wagę swojej ceny w medianie. Zostaje najnowsze ogłoszenie (ostatni wiersz)."""
+def usun_duplikaty_ogloszen(otomoto, klucz=KLUCZ_DUPLIKATU_OTOMOTO, tolerancja_km=TOLERANCJA_PRZEBIEGU_KM):
+    """To samo auto wystawione ponownie pod nowym ID (ten sam sprzedawca, rok, paliwo, skrzynia i miasto, przebieg w granicach
+    tolerancji, cena i tytuł dowolne) liczy się raz, inaczej zawyża liczebność grupy i wagę swojej ceny w medianie.
+    Kolejne ogłoszenia z różnicą przebiegu do tolerancji tworzą jedną grupę. Zostaje najnowsze (ostatni wiersz).
+    Tolerancja dotyczy tylko osób prywatnych (jeżdżą autem na co dzień); handlarze mają wiele podobnych aut o bliskich przebiegach,
+    więc u nich liczy się dokładny przebieg. Bez kolumny Sprzedawca wszyscy traktowani są jak osoby prywatne.
+    Ogłoszenia bez przebiegu zostają bez zmian, bo nie ma jak ich porównać."""
     klucz = [k for k in klucz if k in otomoto.columns]
-    return otomoto.drop_duplicates(klucz, keep='last')
+    prywatny = otomoto['Sprzedawca'] == SPRZEDAWCA_PRYWATNY if 'Sprzedawca' in otomoto.columns else True
+    d = otomoto.assign(_poz=range(len(otomoto)), _km=pd.to_numeric(otomoto['Przebieg_km'], errors='coerce'),
+                       _tolerancja=np.where(prywatny, tolerancja_km, 0))
+    z_przebiegiem = d[d['_km'].notna()].sort_values('_km', kind='stable')
+    nowa_grupa = z_przebiegiem.groupby(klucz, dropna=False)['_km'].diff() > z_przebiegiem['_tolerancja']
+    z_przebiegiem['_grupa'] = nowa_grupa.groupby([z_przebiegiem[k] for k in klucz], dropna=False).cumsum()
+    z_przebiegiem = z_przebiegiem.sort_values('_poz').drop_duplicates(klucz + ['_grupa'], keep='last')
+    wynik = pd.concat([z_przebiegiem, d[d['_km'].isna()]]).sort_values('_poz')
+    return wynik.drop(columns=['_poz', '_km', '_tolerancja', '_grupa'], errors='ignore')
 
 def oznacz_niepewne_wersje(grupy, rozrzut_proc, wersja_podstawowa=WERSJA_PODSTAWOWA, max_rozrzut=MAX_ROZRZUT_CEN_OTOMOTO):
     """Kolumna 0/1: grupa bez rozpoznanej wersji, której ceny Otomoto są mocno rozrzucone (rozrzut w %, brak = 0)."""

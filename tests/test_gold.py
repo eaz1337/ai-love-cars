@@ -136,19 +136,44 @@ class TestFiltrujSprzedawce:
 class TestUsunDuplikatyOgloszen:
     def _df(self, **zmiany):
         baza = {"Marka": "ram", "Model": "1500", "Tytul": "RAM 1500 Rebel", "Rok_produkcji": 2023, "Cena_PLN": 226600,
-                "Przebieg_km": 63000, "Pojemnosc_cm3": 5654, "Moc_KM": 401, "Nazwa_Sprzedawcy": "Auto sp. z o.o."}
+                "Przebieg_km": 63000, "Paliwo": "Benzyna", "Skrzynia_biegow": "Automatyczna", "Miasto": "Warszawa",
+                "Nazwa_Sprzedawcy": "Auto sp. z o.o."}
         return pd.DataFrame([{**baza, "ID_Ogloszenia": "a"}, {**baza, **zmiany, "ID_Ogloszenia": "b"}])
 
     def test_same_car_under_two_ids_counts_once_and_keeps_latest(self):
         wynik = gold.usun_duplikaty_ogloszen(self._df())
         assert list(wynik["ID_Ogloszenia"]) == ["b"]
 
-    @pytest.mark.parametrize("zmiana", [{"Cena_PLN": 219000}, {"Przebieg_km": 64000}, {"Nazwa_Sprzedawcy": "Inna firma"}])
-    def test_different_price_mileage_or_seller_is_a_different_car(self, zmiana):
+    @pytest.mark.parametrize("zmiana", [{"Cena_PLN": 219000}, {"Tytul": "RAM 1500 Laramie"}, {"Przebieg_km": 64500}, {"Przebieg_km": 66000}])
+    def test_changed_price_title_or_slightly_higher_mileage_is_still_the_same_car(self, zmiana):
+        assert list(gold.usun_duplikaty_ogloszen(self._df(**zmiana))["ID_Ogloszenia"]) == ["b"]
+
+    @pytest.mark.parametrize("zmiana", [
+        {"Przebieg_km": 70000}, {"Nazwa_Sprzedawcy": "Inna firma"}, {"Rok_produkcji": 2022}, {"Paliwo": "Diesel"},
+        {"Skrzynia_biegow": "Manualna"}, {"Miasto": "Kraków"}])
+    def test_different_mileage_seller_year_fuel_gearbox_or_city_is_a_different_car(self, zmiana):
         assert len(gold.usun_duplikaty_ogloszen(self._df(**zmiana))) == 2
 
     def test_missing_seller_name_still_dedupes(self):
         assert len(gold.usun_duplikaty_ogloszen(self._df(Nazwa_Sprzedawcy=None).assign(Nazwa_Sprzedawcy=None))) == 1
+
+    def test_chain_of_small_mileage_steps_is_one_car(self):
+        df = pd.concat([self._df(), self._df(Przebieg_km=65500).iloc[[1]].assign(ID_Ogloszenia="c"),
+                        self._df(Przebieg_km=68000).iloc[[1]].assign(ID_Ogloszenia="d")], ignore_index=True)
+        assert list(gold.usun_duplikaty_ogloszen(df)["ID_Ogloszenia"]) == ["d"]
+
+    def test_dealers_get_no_mileage_tolerance(self):
+        assert len(gold.usun_duplikaty_ogloszen(self._df(Przebieg_km=64500).assign(Sprzedawca="Firma"))) == 2
+
+    def test_dealers_with_identical_mileage_still_dedupe(self):
+        assert len(gold.usun_duplikaty_ogloszen(self._df().assign(Sprzedawca="Firma"))) == 1
+
+    def test_private_sellers_get_mileage_tolerance(self):
+        assert len(gold.usun_duplikaty_ogloszen(self._df(Przebieg_km=64500).assign(Sprzedawca="Osoba prywatna"))) == 1
+
+    def test_missing_mileage_is_never_merged(self):
+        df = self._df(Przebieg_km=None).assign(Przebieg_km=None)
+        assert len(gold.usun_duplikaty_ogloszen(df)) == 2
 
 
 class TestOznaczNiepewneWersje:
