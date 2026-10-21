@@ -207,6 +207,25 @@ def extract_capacity_otomoto(cm3):
     except:
         return None
 
+POJEMNOSC_W_TEKSCIE = re.compile(
+    r'(?<![\d./,])([1-9][.,]\d)(?![\d.,])(?!\s*(?:tys|mln|zł|pln|kw|km\b|kg|m\b|l/|%|s\b))|(?<!\d)([1-9])\s?(\d{3})\s?cm', re.IGNORECASE)
+TOLERANCJA_POJEMNOSCI_L = 0.3
+
+def popraw_pojemnosc_z_tekstu(pojemnosc_l, tytul, opis):
+    """Sprzedawcy często zostawiają w formularzu Otomoto domyślne 998 cm3, a w tytule lub opisie podają prawdziwą pojemność ('2.0 Ti-VCT',
+    '1 998cm3'). Gdy tekst wskazuje dokładnie jedną pojemność i różni się ona od pola o więcej niż tolerancja, bierzemy tę z tekstu."""
+    kandydaci = set()
+    for m in POJEMNOSC_W_TEKSCIE.finditer(f"{tytul or ''} {opis or ''}"):
+        wartosc = float(m.group(1).replace(',', '.')) if m.group(1) else round(float(m.group(2) + m.group(3)) / 1000.0, 1)
+        if 0.6 <= wartosc <= 8.0:
+            kandydaci.add(round(wartosc, 1))
+    if len(kandydaci) != 1:
+        return pojemnosc_l
+    z_tekstu = kandydaci.pop()
+    if pojemnosc_l is None or pd.isna(pojemnosc_l) or abs(z_tekstu - pojemnosc_l) > TOLERANCJA_POJEMNOSCI_L:
+        return z_tekstu
+    return pojemnosc_l
+
 ELEKTRYCZNE_MARKI = {'tesla', 'lucid', 'polestar'}
 ELEKTRYCZNE_SLOWA = re.compile(r'\b(e-tron|electric|taycan|ioniq|ev6|ev9|mach-e|leaf|id\.\s?[3-7])\b', re.IGNORECASE)
 
@@ -289,6 +308,8 @@ if __name__ == '__main__':
     
     if 'Pojemnosc_cm3' in otomoto_df.columns:
         otomoto_df['Pojemnosc_L'] = otomoto_df['Pojemnosc_cm3'].apply(extract_capacity_otomoto)
+        opisy = otomoto_df['Opis'] if 'Opis' in otomoto_df.columns else [''] * len(otomoto_df)
+        otomoto_df['Pojemnosc_L'] = [popraw_pojemnosc_z_tekstu(poj, t, o) for poj, t, o in zip(otomoto_df['Pojemnosc_L'], otomoto_df['Tytul'], opisy)]
     else:
         otomoto_df['Pojemnosc_L'] = None
     

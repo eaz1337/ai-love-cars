@@ -84,6 +84,16 @@ class TestCapacity:
         assert gold.extract_capacity_otomoto(float("nan")) is None
         assert gold.extract_capacity_otomoto("abc") is None
 
+    def test_popraw_pojemnosc_z_tekstu(self):
+        f = gold.popraw_pojemnosc_z_tekstu
+        assert f(1.0, 'Ford EcoSport', 'Titanium 2.0 Silnik: 1 998cm3! Moc: 140 KM') == 2.0
+        assert f(1.0, 'Ford EcoSport', 'silnik 2,0 Ti-VCT 4x4') == 2.0
+        assert f(1.0, 'Ford EcoSport', 'silnik 1.0 EcoBoost, 125 KM, cena 45.000 zł') == 1.0
+        assert f(1.0, 'Ford EcoSport', 'rodzaje 1.0 i 2.0 do wyboru') == 1.0
+        assert f(2.0, 'Ford EcoSport', 'przebieg 83.5 tys. km, 2.0') == 2.0
+        assert f(None, 'Ford', 'brak danych') is None
+        assert f(None, 'Ford', '1.6 benzyna') == 1.6
+
 
 class TestIsHybrid:
     @pytest.mark.parametrize("title", ["Toyota Camry Hybrid", "Kia Niro PHEV", "BMW 330e MHEV"])
