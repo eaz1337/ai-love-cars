@@ -183,6 +183,41 @@ class TestOznaczNiepewneWersje:
         assert list(gold.oznacz_niepewne_wersje(grupy, rozrzut)) == [1, 0, 0, 0]
 
 
+class TestOznaczPodejrzaneRoczniki:
+    KLUCZ = dict(Marka="bmw", Model="seria 3", Pojemnosc_L=2.0, Wersja="podstawowa", Nadwozie="standard")
+
+    def _otomoto(self, ceny, ilosc=5):
+        return pd.DataFrame([dict(self.KLUCZ, Rok_produkcji=r, Cena_USA_Kanada_Otomoto_PLN=c, Ilosc_USA_Kanada_Otomoto=ilosc) for r, c in ceny.items()])
+
+    def _grupy(self, roczniki, ceny):
+        return pd.DataFrame([dict(self.KLUCZ, Rocznik=r, Cena_USA_Kanada_Otomoto_PLN=ceny[r]) for r in roczniki])
+
+    def test_flags_boundary_year_with_price_jump_to_neighbor(self):
+        ceny = {2018: 100_000, 2019: 130_000, 2020: 135_000}
+        grupy = self._grupy([2019], ceny)
+        assert list(gold.oznacz_podejrzane_roczniki(grupy, self._otomoto(ceny), pd.Series([1]))) == [1]
+
+    def test_boundary_year_with_stable_prices_is_not_flagged(self):
+        ceny = {2018: 100_000, 2019: 105_000, 2020: 108_000}
+        grupy = self._grupy([2019], ceny)
+        assert list(gold.oznacz_podejrzane_roczniki(grupy, self._otomoto(ceny), pd.Series([1]))) == [0]
+
+    def test_non_boundary_year_is_never_flagged(self):
+        ceny = {2018: 100_000, 2019: 130_000, 2020: 135_000}
+        grupy = self._grupy([2019], ceny)
+        assert list(gold.oznacz_podejrzane_roczniki(grupy, self._otomoto(ceny), pd.Series([0]))) == [0]
+
+    def test_neighbor_with_too_few_listings_is_ignored(self):
+        ceny = {2018: 100_000, 2019: 130_000}
+        grupy = self._grupy([2019], ceny)
+        assert list(gold.oznacz_podejrzane_roczniki(grupy, self._otomoto(ceny, ilosc=1), pd.Series([1]))) == [0]
+
+    def test_no_neighbors_means_no_flag(self):
+        ceny = {2019: 130_000}
+        grupy = self._grupy([2019], ceny)
+        assert list(gold.oznacz_podejrzane_roczniki(grupy, self._otomoto(ceny), pd.Series([1]))) == [0]
+
+
 class TestOznaczWiarygodnosc:
     def test_levels_from_both_counts(self):
         aukcje = pd.Series([10, 12, 5, 9, 3, 50, 4])

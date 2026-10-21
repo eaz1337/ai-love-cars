@@ -68,3 +68,22 @@ def test_csv_ma_pierwszenstwo_przed_otomoto(tmp_path):
 def test_brak_pliku_csv():
     assert generacje.wczytaj_csv('/nie/ma/takiego.csv', str.lower) == {}
     assert generacje.wczytaj_csv(None, str.lower) == {}
+
+
+SLOWNIK = {("bmw", "seria 3"): [("G20", 2019, generacje.OTWARTY_KONIEC), ("F30", 2012, 2018)]}
+
+
+def test_rocznik_graniczny_pierwszy_i_ostatni_rok_generacji():
+    assert generacje.rocznik_graniczny("bmw", "seria 3", 2012, SLOWNIK) == 1
+    assert generacje.rocznik_graniczny("bmw", "seria 3", 2018, SLOWNIK) == 1
+    assert generacje.rocznik_graniczny("bmw", "seria 3", 2015, SLOWNIK) == 0
+
+
+def test_rocznik_graniczny_trwajaca_generacja_nie_ma_konca():
+    assert generacje.rocznik_graniczny("bmw", "seria 3", 2019, SLOWNIK) == 1
+    assert generacje.rocznik_graniczny("bmw", "seria 3", 2024, SLOWNIK) == 0
+
+
+def test_rocznik_graniczny_bez_generacji_to_zero():
+    assert generacje.rocznik_graniczny("bmw", "seria 5", 2018, SLOWNIK) == 0
+    assert generacje.rocznik_graniczny("bmw", "seria 3", 2005, SLOWNIK) == 0

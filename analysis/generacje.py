@@ -58,3 +58,17 @@ def generacja(marka, model, rok, slownik):
 def dodaj_generacje(df, kol_marka, kol_model, kol_rok, slownik):
     """Zwraca serię z generacją dla każdego wiersza df."""
     return pd.Series([generacja(ma, mo, int(r), slownik) for ma, mo, r in zip(df[kol_marka], df[kol_model], df[kol_rok])], index=df.index)
+
+
+def rocznik_graniczny(marka, model, rok, slownik):
+    """1, gdy rocznik jest pierwszym lub ostatnim rokiem swojej generacji (lifty to osobne wpisy, więc ich granice też się liczą).
+    Trwająca generacja nie ma ostatniego roku. Brak generacji to 0."""
+    for _, od, do in slownik.get((marka, model), []):
+        if od <= rok <= do:
+            return int(rok == od or rok == do)
+    return 0
+
+
+def dodaj_granice(df, kol_marka, kol_model, kol_rok, slownik):
+    """Zwraca serię 0/1: czy rocznik każdego wiersza df jest graniczny dla swojej generacji."""
+    return pd.Series([rocznik_graniczny(ma, mo, int(r), slownik) for ma, mo, r in zip(df[kol_marka], df[kol_model], df[kol_rok])], index=df.index)

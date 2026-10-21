@@ -5,7 +5,8 @@ import sqlite3
 import os
 from datetime import date, datetime
 
-from generacje import dodaj_generacje, wczytaj_generacje
+from generacje import dodaj_generacje, dodaj_granice, wczytaj_generacje
+from ranking_generacji import licz_ranking_generacji
 from plynnosc import KOLUMNY_PLYNNOSCI, licz_plynnosc
 from trendy import KOLUMNY_TRENDU, MIN_AUKCJI_W_OKNIE, OKNO_DNI, licz_trendy, zapisz_snapshot
 from koszty import transport_ladowy_usd, wczytaj_koszty
@@ -31,6 +32,7 @@ OPLATY_PORTOWE_TUMACZENIA_PLN = 2500
 TRANSPORT_DO_PL_PLN = 1800
 
 TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
+TABELA_RANKINGU = 'ranking_generacji_usa'
 
 # Baza leży w roocie repo niezależnie od katalogu uruchomienia (jak w scraperach); SAMOCHODY_DB nadpisuje ścieżkę
 DB_PATH = os.environ.get('SAMOCHODY_DB') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'samochody.db')
@@ -45,6 +47,10 @@ MIN_OGLOSZEN_OTOMOTO = 3
 # Grupa bez rozpoznanej wersji ('podstawowa') z takim rozrzutem cen Otomoto ((q90 - q10) / mediana) miesza prawdopodobnie
 # kilka wersji wyposażenia, więc jej marża jest niepewna. Takie grupy lądują na końcu rankingu z flagą Niepewna_Wersja
 MAX_ROZRZUT_CEN_OTOMOTO = 0.30
+# Aukcja z pierwszego lub ostatniego roku generacji łatwo trafia do cen sąsiedniej generacji (rok modelowy USA kontra rok
+# produkcji w Polsce). Jeśli cena Otomoto dla takiego rocznika różni się od ceny roku wcześniej lub później o więcej niż tyle,
+# grupa dostaje flagę Podejrzany_Rocznik i ląduje niżej w rankingu
+MAX_ROZNICA_SASIEDNICH_LAT = 0.15
 # Wiarygodność grupy z liczby próbek (aukcje USA, ogłoszenia Otomoto z USA/Kanady): (min. aukcji, min. ogłoszeń) -> etykieta.
 # Niska nie jest wycinana, bo egzotyki mają po kilka sztuk; tabela tylko ją oznacza i sortuje niżej
 WIARYGODNOSC_PROGI = [(10, 5, 'wysoka'), (5, 3, 'srednia')]
@@ -159,6 +165,21 @@ def usun_duplikaty_ogloszen(otomoto, klucz=KLUCZ_DUPLIKATU_OTOMOTO, tolerancja_k
 def oznacz_niepewne_wersje(grupy, rozrzut_proc, wersja_podstawowa=WERSJA_PODSTAWOWA, max_rozrzut=MAX_ROZRZUT_CEN_OTOMOTO):
     """Kolumna 0/1: grupa bez rozpoznanej wersji, której ceny Otomoto są mocno rozrzucone (rozrzut w %, brak = 0)."""
     return ((grupy['Wersja'] == wersja_podstawowa) & (rozrzut_proc.fillna(0) > max_rozrzut * 100)).astype(int)
+
+def oznacz_podejrzane_roczniki(grupy, otomoto_agg, graniczny, max_roznica=MAX_ROZNICA_SASIEDNICH_LAT, min_ogloszen=MIN_OGLOSZEN_OTOMOTO):
+    """Kolumna 0/1: rocznik graniczny, którego cena Otomoto z USA/Kanady różni się o więcej niż max_roznica od roku wcześniej
+    lub później (sąsiad liczy się, gdy ma co najmniej min_ogloszen ogłoszeń; bez sąsiadów nie ma podstaw do flagi)."""
+    klucz = ['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie']
+    cena = 'Cena_USA_Kanada_Otomoto_PLN'
+    lewa = grupy[klucz + ['Rocznik', cena]].reset_index(drop=True)
+    roznica = np.zeros(len(lewa))
+    wiarygodni = otomoto_agg[otomoto_agg['Ilosc_USA_Kanada_Otomoto'] >= min_ogloszen]
+    for przesuniecie in (-1, 1):
+        sasiad = wiarygodni[klucz + ['Rok_produkcji', cena]].rename(columns={cena: '_cena_sasiada'})
+        sasiad = sasiad.assign(Rocznik=sasiad['Rok_produkcji'] - przesuniecie).drop(columns='Rok_produkcji')
+        polaczone = lewa.merge(sasiad, on=klucz + ['Rocznik'], how='left')
+        roznica = np.maximum(roznica, (polaczone[cena] / polaczone['_cena_sasiada'] - 1).abs().fillna(0).to_numpy())
+    return pd.Series(((roznica > max_roznica) & (graniczny.to_numpy() == 1)).astype(int), index=grupy.index)
 
 def oznacz_wiarygodnosc(aukcje, ogloszenia, progi=WIARYGODNOSC_PROGI):
     """'wysoka' / 'srednia' / 'niska' z liczby aukcji USA i ogłoszeń Otomoto (pierwszy próg, który oba warunki spełnia)."""
@@ -419,6 +440,9 @@ if __name__ == '__main__':
 
     gold_layer['Niepewna_Wersja'] = oznacz_niepewne_wersje(gold_layer, gold_layer['Rozrzut_Cen_Otomoto_%'])
 
+    gold_layer['Rocznik_Graniczny'] = dodaj_granice(gold_layer, 'Marka', 'Model', 'Rocznik', slownik_generacji)
+    gold_layer['Podejrzany_Rocznik'] = oznacz_podejrzane_roczniki(gold_layer, otomoto_agg, gold_layer['Rocznik_Graniczny'])
+
     gold_layer['Wiarygodnosc'] = oznacz_wiarygodnosc(gold_layer['Ilosc_Aukcje_USA'], gold_layer['Ilosc_USA_Kanada_Otomoto'])
 
     assert (gold_layer['Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
@@ -427,7 +451,7 @@ if __name__ == '__main__':
         'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
         'Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
-        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Wiarygodnosc'
+        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Rocznik_Graniczny', 'Podejrzany_Rocznik', 'Wiarygodnosc'
     ]
     if 'Ilosc_Krajowe' in gold_layer.columns and 'Cena_Krajowe_PLN' in gold_layer.columns:
         base_cols.insert(7, 'Ilosc_Krajowe')
@@ -435,11 +459,11 @@ if __name__ == '__main__':
 
     final_cols = [col for col in base_cols if col in gold_layer.columns]
     
-    # Na końcu rankingu: grupy ze zmieszanymi wersjami, potem te z małą próbką (w obrębie wiarygodności sortuje marża)
+    # Na końcu rankingu: grupy ze zmieszanymi wersjami, potem z podejrzanym rocznikiem, potem te z małą próbką (w obrębie wiarygodności sortuje marża)
     gold_layer = gold_layer[final_cols]
     kolejnosc = gold_layer['Wiarygodnosc'].map(WIARYGODNOSC_KOLEJNOSC.index)
     gold_layer = gold_layer.assign(_kol=kolejnosc).sort_values(
-        by=['Niepewna_Wersja', '_kol', 'Budzet_Na_Naprawe_%'], ascending=[True, True, False]).drop(columns='_kol').round(1)
+        by=['Niepewna_Wersja', 'Podejrzany_Rocznik', '_kol', 'Budzet_Na_Naprawe_%'], ascending=[True, True, True, False]).drop(columns='_kol').round(1)
     
     table_name = 'analiza_rentownosci_usa'
     
@@ -450,6 +474,9 @@ if __name__ == '__main__':
         gold_do_zapisu.to_sql(table_name, conn, if_exists='replace', index=False)
         # Historię marży i trendów trzymamy w osobnym snapshocie z datą
         zapisano = zapisz_snapshot(conn, TABELA_HISTORII, gold_layer)
+        ranking = licz_ranking_generacji(gold_layer)
+        ranking.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
+        ranking.to_sql(TABELA_RANKINGU, conn, if_exists='replace', index=False)
     print(f"ℹ️  Snapshot: dopisano {zapisano} grup do '{TABELA_HISTORII}' ({date.today().isoformat()}).")
     print(f"ℹ️  Trend ceny USA policzony dla {int(gold_layer['Trend_Ceny_USA_%'].notna().sum())} z {len(gold_layer)} grup "
           f"(okno {OKNO_DNI} dni, min. {MIN_AUKCJI_W_OKNIE} aukcje w każdym oknie).")
@@ -457,7 +484,9 @@ if __name__ == '__main__':
     bez_generacji = int((gold_layer['Generacja'] == 'brak').sum())
     print(f"ℹ️  Generacja: {len(gold_layer) - bez_generacji} z {len(gold_layer)} grup przypisano ({len(slownik_generacji)} modeli w słowniku).")
 
+    print(f"ℹ️  Rocznik graniczny: {int(gold_layer['Rocznik_Graniczny'].sum())} grup, z czego podejrzanych (cena Otomoto różni się >{MAX_ROZNICA_SASIEDNICH_LAT:.0%} od sąsiedniego roku): {int(gold_layer['Podejrzany_Rocznik'].sum())}.")
     ujemne = int((gold_layer['Budzet_Na_Naprawe_PLN'] < 0).sum())
     print(f"ℹ️  Niepewna wersja (podstawowa, rozrzut cen Otomoto > {MAX_ROZRZUT_CEN_OTOMOTO:.0%}): {int(gold_layer['Niepewna_Wersja'].sum())} grup, na końcu rankingu.")
     print("ℹ️  Wiarygodność: " + ", ".join(f"{e} {int((gold_layer['Wiarygodnosc'] == e).sum())}" for e in WIARYGODNOSC_KOLEJNOSC) + ".")
+    print(f"ℹ️  Ranking generacji z silnikiem: {len(ranking)} pozycji w tabeli '{TABELA_RANKINGU}'.")
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")
