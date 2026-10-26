@@ -10,26 +10,24 @@ from ranking_generacji import licz_ranking_generacji
 from plynnosc import KOLUMNY_PLYNNOSCI, licz_plynnosc
 from trendy import KOLUMNY_TRENDU, MIN_AUKCJI_W_OKNIE, OKNO_DNI, licz_trendy, zapisz_snapshot
 from koszty import transport_ladowy_usd, wczytaj_koszty
+from koszt_importu import licz_koszt_importu
+from kursy import kursy
+from oplaty_aukcyjne import wczytaj_oplaty
 from slownik import szkic_slownika, wczytaj_slownik, wersja_reczna
 from wersje import WERSJA_PODSTAWOWA, buduj_slownik, nadwozie, tokeny_wersji, uzupelnij_wersje_z_mocy, wersja
 
 # ==========================================
 # 1. KONFIGURACJA ZMIENNYCH FINANSOWYCH
 # ==========================================
-USD_TO_PLN = 3.55
-# Stała część: fracht morski i opłaty aukcyjne. Transport lądowy do portu zależy od lokalizacji (koszty_transportu.csv).
-# 1700 + średni transport lądowy ze słownika (ok. 520) daje średnio dawne 2200 USD
-KOSZT_FRACHT_I_OPLATY_USD = 1700
+# Kursy USD i EUR bierzemy z NBP przy każdym uruchomieniu (patrz kursy.py), a koszty importu liczy koszt_importu.py
+# Transport lądowy do portu zależy od lokalizacji (koszty_transportu.csv), opłata aukcyjna od ceny (oplaty_aukcyjne.csv)
+OPLATY_AUKCYJNE = os.environ.get('GOLD_OPLATY_AUKCYJNE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oplaty_aukcyjne.csv'))
 KOSZTY_TRANSPORTU = os.environ.get('GOLD_KOSZTY_TRANSPORTU', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'koszty_transportu.csv'))
 # Ceny poniżej tego progu to placeholdery (np. 1, 2 i 25 USD przed właściwą ceną), a nie sprzedaż
 MIN_CENA_AUKCJI_USD = 100
-STAWKA_CLA = 0.10
-STAWKA_VAT = 0.19
 STAWKA_AKCYZY_ELEKTRYCZNE = 0.0   # auta elektryczne są zwolnione z akcyzy
 # Auta elektryczne nie mają pojemności silnika. Żeby nie wypadały z grupowania (NaN w kluczu), dostają pojemność 0.0
 POJEMNOSC_ELEKTRYCZNE_L = 0.0
-OPLATY_PORTOWE_TUMACZENIA_PLN = 2500
-TRANSPORT_DO_PL_PLN = 1800
 
 TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
 TABELA_RANKINGU = 'ranking_generacji_usa'
@@ -409,21 +407,12 @@ if __name__ == '__main__':
     rozrzut = ((ceny_usa.quantile(0.9) - ceny_usa.quantile(0.1)) / ceny_usa.median() * 100).rename('Rozrzut_Cen_Otomoto_%').reset_index()
     otomoto_agg = otomoto_agg.merge(rozrzut, on=klucz_otomoto, how='left')
 
-    bidfax_df['Cena_Zakupu_USA_PLN'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce') * USD_TO_PLN
+    bidfax_df['Cena_USD'] = pd.to_numeric(bidfax_df['Cena_USD'], errors='coerce')
+    kursy_walut = kursy()
+    print(f"ℹ️  Kursy: USD {kursy_walut['USD']['kurs']:.4f} ({kursy_walut['USD']['zrodlo']}), EUR {kursy_walut['EUR']['kurs']:.4f} ({kursy_walut['EUR']['zrodlo']}).")
     koszty_transportu = wczytaj_koszty(KOSZTY_TRANSPORTU)
     bidfax_df['Transport_Ladowy_USD'] = bidfax_df['Lokalizacja'].apply(lambda l: transport_ladowy_usd(l, koszty_transportu))
-    bidfax_df['Transport_i_Oplaty_PLN'] = (KOSZT_FRACHT_I_OPLATY_USD + bidfax_df['Transport_Ladowy_USD']) * USD_TO_PLN
-    bidfax_df['Wartosc_Celna_PLN'] = bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Transport_i_Oplaty_PLN']
-    bidfax_df['Clo_PLN'] = bidfax_df['Wartosc_Celna_PLN'] * STAWKA_CLA
-    bidfax_df['Wartosc_do_Akcyzy_PLN'] = bidfax_df['Wartosc_Celna_PLN'] + bidfax_df['Clo_PLN']
-    bidfax_df['Akcyza_PLN'] = bidfax_df['Wartosc_do_Akcyzy_PLN'] * bidfax_df['Stawka_Akcyzy']
-    bidfax_df['Wartosc_do_VAT_PLN'] = bidfax_df['Wartosc_do_Akcyzy_PLN'] + bidfax_df['Akcyza_PLN']
-    bidfax_df['VAT_PLN'] = bidfax_df['Wartosc_do_VAT_PLN'] * STAWKA_VAT
-    bidfax_df['Koszt_Import_PLN'] = (
-        bidfax_df['Cena_Zakupu_USA_PLN'] + bidfax_df['Transport_i_Oplaty_PLN'] + 
-        bidfax_df['Clo_PLN'] + bidfax_df['Akcyza_PLN'] + bidfax_df['VAT_PLN'] + 
-        OPLATY_PORTOWE_TUMACZENIA_PLN + TRANSPORT_DO_PL_PLN
-    )
+    bidfax_df = licz_koszt_importu(bidfax_df, kursy_walut['USD']['kurs'], kursy_walut['EUR']['kurs'], wczytaj_oplaty(OPLATY_AUKCYJNE))
 
     usa_agg = bidfax_df.groupby(['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik']).agg(
         Cena_Zakupu_USA_USD=('Cena_USD', 'median'),
