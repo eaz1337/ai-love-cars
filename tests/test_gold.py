@@ -45,6 +45,16 @@ class TestMapModelDynamic:
         assert gold.map_model_dynamic("Nissan", "Rogue Sport SV", None) == "qashqai"
         assert gold.map_model_dynamic("Nissan", "Rogue SV", None) == "x-trail"
 
+    @pytest.mark.parametrize("model, expected", [
+        ("Mdl 3", "model 3"),
+        ("Model  Y", "model y"),
+        ("Mdl Y 4D Std", "model y"),
+        ("Model S 100D/75D/P100D", "model s"),
+        ("Model X Plaid Tri Motor All-Wheel Drive", "model x"),
+    ])
+    def test_tesla_skroty_i_podwojne_spacje(self, model, expected):
+        assert gold.map_model_dynamic("Tesla", model, {"model 3", "model y"}) == expected
+
     @pytest.mark.parametrize("title,expected", [
         ("328 i", "seria 3"),
         ("530i", "seria 5"),

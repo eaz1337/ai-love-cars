@@ -77,7 +77,9 @@ SLOWNIK_WERSJI = os.environ.get('GOLD_SLOWNIK_WERSJI', os.path.join(os.path.dirn
 US_EU_ALIASES = {
     'ford': {'fusion': 'mondeo', 'escape': 'kuga', 'edge': 'edge'},
     'nissan': {'rogue': 'x-trail', 'rogue sport': 'qashqai'},
-    'volkswagen': {'jetta': 'jetta', 'passat': 'passat'}
+    'volkswagen': {'jetta': 'jetta', 'passat': 'passat'},
+    # Bidfax skraca 'Model' do 'Mdl' i czasem podwaja spację ('Model  Y')
+    'tesla': {f'{skrot} {litera}': f'model {litera}' for skrot in ('model', 'mdl') for litera in '3sxy'},
 }
 
 # Bidfax podaje slug z URL-a ('land-rover'), Otomoto nazwę wyświetlaną ('Land Rover'). Wspólna postać: małe litery, myślniki
@@ -94,7 +96,7 @@ def _slowo_w_tekscie(szukane, tekst):
 
 def map_model_dynamic(marka, bidfax_model, otomoto_models_for_brand):
     marka = str(marka).lower()
-    b_model = str(bidfax_model).lower()
+    b_model = re.sub(r'\s+', ' ', str(bidfax_model).lower())
     
     if marka in US_EU_ALIASES:
         # Najdłuższe nazwy najpierw: 'rogue sport' (qashqai) musi wygrać z 'rogue' (x-trail)

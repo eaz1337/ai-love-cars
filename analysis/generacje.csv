@@ -324,6 +324,14 @@ mazda,3,BP,2018,
 tesla,model 3,Gen1,2017,2019
 tesla,model 3,Gen1 FL,2020,2022
 tesla,model 3,Highland,2023,
+tesla,model s,Gen1,2012,2015
+tesla,model s,Gen1 FL,2016,2020
+tesla,model s,Gen2,2021,
+tesla,model x,Gen1,2016,2021
+tesla,model x,Gen2,2022,
+tesla,model y,Gen1,2020,2024
+tesla,model y,Juniper,2025,
+tesla,cybertruck,Gen1,2024,
 mazda,cx-9,TB,2007,2011
 mazda,cx-9,TB FL,2012,2015
 mazda,cx-9,TC,2016,
