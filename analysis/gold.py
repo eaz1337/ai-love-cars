@@ -170,7 +170,7 @@ def oznacz_podejrzane_roczniki(grupy, otomoto_agg, graniczny, max_roznica=MAX_RO
     """Kolumna 0/1: rocznik graniczny, którego cena Otomoto z USA/Kanady różni się o więcej niż max_roznica od roku wcześniej
     lub później (sąsiad liczy się, gdy ma co najmniej min_ogloszen ogłoszeń; bez sąsiadów nie ma podstaw do flagi)."""
     klucz = ['Marka', 'Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie']
-    cena = 'Cena_USA_Kanada_Otomoto_PLN'
+    cena = 'Mediana_Cena_USA_Kanada_Otomoto_PLN'
     lewa = grupy[klucz + ['Rocznik', cena]].reset_index(drop=True)
     roznica = np.zeros(len(lewa))
     wiarygodni = otomoto_agg[otomoto_agg['Ilosc_USA_Kanada_Otomoto'] >= min_ogloszen]
@@ -390,9 +390,9 @@ if __name__ == '__main__':
     )
     otomoto_agg.columns = ['_'.join(col).strip() for col in otomoto_agg.columns.values]
     otomoto_agg = otomoto_agg.rename(columns={
-        'median_Polska_Krajowe': 'Cena_Krajowe_PLN',
-        'median_USA_Kanada': 'Cena_USA_Kanada_Otomoto_PLN',
-        'median_Inny_Import': 'Cena_Inny_Import_PLN',
+        'median_Polska_Krajowe': 'Mediana_Cena_Krajowe_PLN',
+        'median_USA_Kanada': 'Mediana_Cena_USA_Kanada_Otomoto_PLN',
+        'median_Inny_Import': 'Mediana_Cena_Inny_Import_PLN',
         'count_Polska_Krajowe': 'Ilosc_Krajowe',
         'count_USA_Kanada': 'Ilosc_USA_Kanada_Otomoto'
     }).reset_index()
@@ -415,12 +415,12 @@ if __name__ == '__main__':
     bidfax_df = licz_koszt_importu(bidfax_df, kursy_walut['USD']['kurs'], kursy_walut['EUR']['kurs'], wczytaj_oplaty(OPLATY_AUKCYJNE))
 
     usa_agg = bidfax_df.groupby(['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik']).agg(
-        Cena_Zakupu_USA_USD=('Cena_USD', 'median'),
+        Mediana_Cena_Zakupu_USA_USD=('Cena_USD', 'median'),
         Procent_Hybryd=('Czy_Hybryda', 'mean'), 
-        Koszt_Import_PLN=('Koszt_Import_PLN', 'median'),
-        Srednie_Clo_PLN=('Clo_PLN', 'median'),
-        Srednia_Akcyza_PLN=('Akcyza_PLN', 'median'),
-        Sredni_VAT_PLN=('VAT_PLN', 'median'),
+        Mediana_Koszt_Import_PLN=('Koszt_Import_PLN', 'median'),
+        Mediana_Clo_PLN=('Clo_PLN', 'median'),
+        Mediana_Akcyza_PLN=('Akcyza_PLN', 'median'),
+        Mediana_VAT_PLN=('VAT_PLN', 'median'),
         Ilosc_Aukcje_USA=('ID', 'count')
     ).reset_index()
     
@@ -436,7 +436,7 @@ if __name__ == '__main__':
     gold_layer['Generacja'] = dodaj_generacje(gold_layer, 'Marka', 'Model', 'Rocznik', slownik_generacji)
 
     # NOWOŚĆ: Usuwamy wiersze, dla których brakuje ceny referencyjnej z Otomoto (zapobiega to liczeniu na NULLach)
-    gold_layer = gold_layer.dropna(subset=['Cena_USA_Kanada_Otomoto_PLN'])
+    gold_layer = gold_layer.dropna(subset=['Mediana_Cena_USA_Kanada_Otomoto_PLN'])
     
     # NOWOŚĆ: Filtr - zostawiamy tylko te modele, których na Otomoto jest min. 3 sztuki, by jedna anomalia cenowa nie psuła wyniku
     gold_layer = gold_layer[gold_layer['Ilosc_USA_Kanada_Otomoto'] >= MIN_OGLOSZEN_OTOMOTO]
@@ -447,8 +447,8 @@ if __name__ == '__main__':
 
     # Naprawy nie da się wycenić z bazy (brak zdjęć), więc zamiast kosztu liczymy, ile z ceny rynkowej zostaje na naprawę
     # po odjęciu całego importu (auto, transport, cło, akcyza, VAT, opłaty).
-    gold_layer['Budzet_Na_Naprawe_PLN'] = gold_layer['Cena_USA_Kanada_Otomoto_PLN'] - gold_layer['Koszt_Import_PLN']
-    gold_layer['Budzet_Na_Naprawe_%'] = (gold_layer['Budzet_Na_Naprawe_PLN'] / gold_layer['Cena_USA_Kanada_Otomoto_PLN'] * 100).round(1)
+    gold_layer['Budzet_Na_Naprawe_PLN'] = gold_layer['Mediana_Cena_USA_Kanada_Otomoto_PLN'] - gold_layer['Mediana_Koszt_Import_PLN']
+    gold_layer['Budzet_Na_Naprawe_%'] = (gold_layer['Budzet_Na_Naprawe_PLN'] / gold_layer['Mediana_Cena_USA_Kanada_Otomoto_PLN'] * 100).round(1)
 
     gold_layer['Niepewna_Wersja'] = oznacz_niepewne_wersje(gold_layer, gold_layer['Rozrzut_Cen_Otomoto_%'])
 
@@ -457,17 +457,17 @@ if __name__ == '__main__':
 
     gold_layer['Wiarygodnosc'] = oznacz_wiarygodnosc(gold_layer['Ilosc_Aukcje_USA'], gold_layer['Ilosc_USA_Kanada_Otomoto'])
 
-    assert (gold_layer['Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
+    assert (gold_layer['Mediana_Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
 
     base_cols = [
         'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
-        'Ilosc_USA_Kanada_Otomoto', 'Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
-        'Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Srednie_Clo_PLN', 'Srednia_Akcyza_PLN', 'Sredni_VAT_PLN', 
-        'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Rocznik_Graniczny', 'Podejrzany_Rocznik', 'Wiarygodnosc'
+        'Ilosc_USA_Kanada_Otomoto', 'Mediana_Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
+        'Mediana_Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Mediana_Clo_PLN', 'Mediana_Akcyza_PLN', 'Mediana_VAT_PLN', 
+        'Mediana_Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Rocznik_Graniczny', 'Podejrzany_Rocznik', 'Wiarygodnosc'
     ]
-    if 'Ilosc_Krajowe' in gold_layer.columns and 'Cena_Krajowe_PLN' in gold_layer.columns:
+    if 'Ilosc_Krajowe' in gold_layer.columns and 'Mediana_Cena_Krajowe_PLN' in gold_layer.columns:
         base_cols.insert(7, 'Ilosc_Krajowe')
-        base_cols.insert(8, 'Cena_Krajowe_PLN')
+        base_cols.insert(8, 'Mediana_Cena_Krajowe_PLN')
 
     final_cols = [col for col in base_cols if col in gold_layer.columns]
     

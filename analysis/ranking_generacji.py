@@ -5,7 +5,7 @@ MIN_OGLOSZEN_RANKING = 5
 
 KLUCZ_RANKINGU = ['Marka', 'Model', 'Generacja', 'Pojemnosc_L']
 KOLUMNY_RANKINGU = [*KLUCZ_RANKINGU, 'Rocznik_Od', 'Rocznik_Do', 'Ilosc_Rocznikow', 'Ilosc_Aukcje_USA', 'Ilosc_USA_Kanada_Otomoto',
-                    'Cena_USA_Kanada_Otomoto_PLN', 'Ilosc_Krajowe', 'Cena_Krajowe_PLN', 'Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%']
+                    'Mediana_Cena_USA_Kanada_Otomoto_PLN', 'Ilosc_Krajowe', 'Mediana_Cena_Krajowe_PLN', 'Mediana_Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%']
 
 
 def _mediana_wazona(wartosci, wagi):
@@ -31,13 +31,13 @@ def licz_ranking_generacji(gold, min_aukcji=MIN_AUKCJI_RANKING, min_ogloszen=MIN
             Ilosc_Aukcje_USA=int(g['Ilosc_Aukcje_USA'].sum()), Ilosc_USA_Kanada_Otomoto=int(g['Ilosc_USA_Kanada_Otomoto'].sum()),
             Ilosc_Krajowe=int(g['Ilosc_Krajowe'].fillna(0).sum()))
         g = g.reset_index(drop=True)
-        wiersz['Cena_USA_Kanada_Otomoto_PLN'] = _mediana_wazona(g['Cena_USA_Kanada_Otomoto_PLN'], g['Ilosc_USA_Kanada_Otomoto'].astype(float))
-        krajowe = g.dropna(subset=['Cena_Krajowe_PLN'])
+        wiersz['Mediana_Cena_USA_Kanada_Otomoto_PLN'] = _mediana_wazona(g['Mediana_Cena_USA_Kanada_Otomoto_PLN'], g['Ilosc_USA_Kanada_Otomoto'].astype(float))
+        krajowe = g.dropna(subset=['Mediana_Cena_Krajowe_PLN'])
         wagi_krajowe = krajowe['Ilosc_Krajowe'].astype(float)
-        wiersz['Cena_Krajowe_PLN'] = _mediana_wazona(krajowe['Cena_Krajowe_PLN'], wagi_krajowe) if wagi_krajowe.sum() > 0 else None
-        wiersz['Koszt_Import_PLN'] = _mediana_wazona(g['Koszt_Import_PLN'], wagi.reset_index(drop=True))
-        wiersz['Budzet_Na_Naprawe_PLN'] = wiersz['Cena_USA_Kanada_Otomoto_PLN'] - wiersz['Koszt_Import_PLN']
-        wiersz['Budzet_Na_Naprawe_%'] = wiersz['Budzet_Na_Naprawe_PLN'] / wiersz['Cena_USA_Kanada_Otomoto_PLN'] * 100
+        wiersz['Mediana_Cena_Krajowe_PLN'] = _mediana_wazona(krajowe['Mediana_Cena_Krajowe_PLN'], wagi_krajowe) if wagi_krajowe.sum() > 0 else None
+        wiersz['Mediana_Koszt_Import_PLN'] = _mediana_wazona(g['Mediana_Koszt_Import_PLN'], wagi.reset_index(drop=True))
+        wiersz['Budzet_Na_Naprawe_PLN'] = wiersz['Mediana_Cena_USA_Kanada_Otomoto_PLN'] - wiersz['Mediana_Koszt_Import_PLN']
+        wiersz['Budzet_Na_Naprawe_%'] = wiersz['Budzet_Na_Naprawe_PLN'] / wiersz['Mediana_Cena_USA_Kanada_Otomoto_PLN'] * 100
         wiersze.append(wiersz)
     if not wiersze:
         return pd.DataFrame(columns=KOLUMNY_RANKINGU)

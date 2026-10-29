@@ -207,10 +207,10 @@ class TestOznaczPodejrzaneRoczniki:
     KLUCZ = dict(Marka="bmw", Model="seria 3", Pojemnosc_L=2.0, Wersja="podstawowa", Nadwozie="standard")
 
     def _otomoto(self, ceny, ilosc=5):
-        return pd.DataFrame([dict(self.KLUCZ, Rok_produkcji=r, Cena_USA_Kanada_Otomoto_PLN=c, Ilosc_USA_Kanada_Otomoto=ilosc) for r, c in ceny.items()])
+        return pd.DataFrame([dict(self.KLUCZ, Rok_produkcji=r, Mediana_Cena_USA_Kanada_Otomoto_PLN=c, Ilosc_USA_Kanada_Otomoto=ilosc) for r, c in ceny.items()])
 
     def _grupy(self, roczniki, ceny):
-        return pd.DataFrame([dict(self.KLUCZ, Rocznik=r, Cena_USA_Kanada_Otomoto_PLN=ceny[r]) for r in roczniki])
+        return pd.DataFrame([dict(self.KLUCZ, Rocznik=r, Mediana_Cena_USA_Kanada_Otomoto_PLN=ceny[r]) for r in roczniki])
 
     def test_flags_boundary_year_with_price_jump_to_neighbor(self):
         ceny = {2018: 100_000, 2019: 130_000, 2020: 135_000}
