@@ -247,3 +247,11 @@ class TestOznaczWiarygodnosc:
     def test_rare_exotic_is_kept_as_low_not_dropped(self):
         wynik = gold.oznacz_wiarygodnosc(pd.Series([3]), pd.Series([3]))
         assert list(wynik) == ["niska"]
+
+
+class TestRozdzielEgzotyki:
+    def test_malo_aukcji_lub_ogloszen_to_egzotyk(self):
+        gold_df = pd.DataFrame({'Ilosc_Aukcje_USA': [3, 2, 5, 1], 'Ilosc_USA_Kanada_Otomoto': [3, 5, 2, 1]})
+        glowne, egzotyki = gold.rozdziel_egzotyki(gold_df)
+        assert list(glowne.index) == [0]
+        assert list(egzotyki.index) == [1, 2, 3]

@@ -31,6 +31,9 @@ POJEMNOSC_ELEKTRYCZNE_L = 0.0
 
 TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
 TABELA_RANKINGU = 'ranking_generacji_usa'
+# Egzotyki: grupy z mniejszą próbką niż progi poniżej (ale z co najmniej 1 aukcją i 1 ogłoszeniem), trzymane osobno, żeby nie
+# mieszały się z rankingiem i nie trafiały do snapshotów i rankingu generacji. Mediana z 1-2 sztuk to orientacja, nie wycena
+TABELA_EGZOTYKOW = 'egzotyki_usa'
 
 # Baza leży w roocie repo niezależnie od katalogu uruchomienia (jak w scraperach); SAMOCHODY_DB nadpisuje ścieżkę
 DB_PATH = os.environ.get('SAMOCHODY_DB') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'samochody.db')
@@ -180,6 +183,11 @@ def oznacz_podejrzane_roczniki(grupy, otomoto_agg, graniczny, max_roznica=MAX_RO
         polaczone = lewa.merge(sasiad, on=klucz + ['Rocznik'], how='left')
         roznica = np.maximum(roznica, (polaczone[cena] / polaczone['_cena_sasiada'] - 1).abs().fillna(0).to_numpy())
     return pd.Series(((roznica > max_roznica) & (graniczny.to_numpy() == 1)).astype(int), index=grupy.index)
+
+def rozdziel_egzotyki(gold, min_aukcji=MIN_AUKCJI_USA, min_ogloszen=MIN_OGLOSZEN_OTOMOTO):
+    """Dzieli grupy na (główne, egzotyki): egzotyk ma mniej niż min_aukcji aukcji USA albo mniej niż min_ogloszen ogłoszeń Otomoto."""
+    egzotyk = (gold['Ilosc_Aukcje_USA'] < min_aukcji) | (gold['Ilosc_USA_Kanada_Otomoto'] < min_ogloszen)
+    return gold[~egzotyk], gold[egzotyk]
 
 def oznacz_wiarygodnosc(aukcje, ogloszenia, progi=WIARYGODNOSC_PROGI):
     """'wysoka' / 'srednia' / 'niska' z liczby aukcji USA i ogłoszeń Otomoto (pierwszy próg, który oba warunki spełnia)."""
@@ -424,8 +432,7 @@ if __name__ == '__main__':
         Ilosc_Aukcje_USA=('ID', 'count')
     ).reset_index()
     
-    usa_agg = usa_agg[usa_agg['Ilosc_Aukcje_USA'] >= MIN_AUKCJI_USA]
-
+    # Progi liczebności stosujemy dopiero po złączeniu z Otomoto (rozdziel_egzotyki), bo grupy poniżej nich idą do osobnej tabeli
     klucz_grupy = ['Marka', 'Otomoto_Model', 'Pojemnosc_L', 'Wersja', 'Nadwozie', 'Rocznik']
     usa_agg = usa_agg.merge(licz_trendy(bidfax_df, klucz_grupy), on=klucz_grupy, how='left')
 
@@ -438,9 +445,6 @@ if __name__ == '__main__':
     # NOWOŚĆ: Usuwamy wiersze, dla których brakuje ceny referencyjnej z Otomoto (zapobiega to liczeniu na NULLach)
     gold_layer = gold_layer.dropna(subset=['Mediana_Cena_USA_Kanada_Otomoto_PLN'])
     
-    # NOWOŚĆ: Filtr - zostawiamy tylko te modele, których na Otomoto jest min. 3 sztuki, by jedna anomalia cenowa nie psuła wyniku
-    gold_layer = gold_layer[gold_layer['Ilosc_USA_Kanada_Otomoto'] >= MIN_OGLOSZEN_OTOMOTO]
-
     # NOWOŚĆ: Zamiana NULLi w ilości aut z polskich salonów na czytelne zera
     if 'Ilosc_Krajowe' in gold_layer.columns:
         gold_layer['Ilosc_Krajowe'] = gold_layer['Ilosc_Krajowe'].fillna(0).astype(int)
@@ -473,6 +477,9 @@ if __name__ == '__main__':
     
     # Na końcu rankingu: grupy ze zmieszanymi wersjami, potem z podejrzanym rocznikiem, potem te z małą próbką (w obrębie wiarygodności sortuje marża)
     gold_layer = gold_layer[final_cols]
+    # Główna tabela: min. 3 aukcje i 3 ogłoszenia Otomoto, by jedna anomalia cenowa nie psuła wyniku; reszta to egzotyki
+    gold_layer, egzotyki = rozdziel_egzotyki(gold_layer)
+    egzotyki = egzotyki.sort_values('Budzet_Na_Naprawe_%', ascending=False).round(1)
     kolejnosc = gold_layer['Wiarygodnosc'].map(WIARYGODNOSC_KOLEJNOSC.index)
     gold_layer = gold_layer.assign(_kol=kolejnosc).sort_values(
         by=['Niepewna_Wersja', 'Podejrzany_Rocznik', '_kol', 'Budzet_Na_Naprawe_%'], ascending=[True, True, True, False]).drop(columns='_kol').round(1)
@@ -485,6 +492,9 @@ if __name__ == '__main__':
         gold_do_zapisu.insert(0, 'Data_Przeladowania', datetime.now().strftime('%Y-%m-%d %H:%M'))
         gold_do_zapisu.to_sql(table_name, conn, if_exists='replace', index=False)
         # Historię marży i trendów trzymamy w osobnym snapshocie z datą
+        egzotyki_do_zapisu = egzotyki.copy()
+        egzotyki_do_zapisu.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
+        egzotyki_do_zapisu.to_sql(TABELA_EGZOTYKOW, conn, if_exists='replace', index=False)
         zapisano = zapisz_snapshot(conn, TABELA_HISTORII, gold_layer)
         ranking = licz_ranking_generacji(gold_layer)
         ranking.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
@@ -501,4 +511,5 @@ if __name__ == '__main__':
     print(f"ℹ️  Niepewna wersja (podstawowa, rozrzut cen Otomoto > {MAX_ROZRZUT_CEN_OTOMOTO:.0%}): {int(gold_layer['Niepewna_Wersja'].sum())} grup, na końcu rankingu.")
     print("ℹ️  Wiarygodność: " + ", ".join(f"{e} {int((gold_layer['Wiarygodnosc'] == e).sum())}" for e in WIARYGODNOSC_KOLEJNOSC) + ".")
     print(f"ℹ️  Ranking generacji z silnikiem: {len(ranking)} pozycji w tabeli '{TABELA_RANKINGU}'.")
+    print(f"ℹ️  Egzotyki (poniżej {MIN_AUKCJI_USA} aukcji lub {MIN_OGLOSZEN_OTOMOTO} ogłoszeń): {len(egzotyki)} grup w tabeli '{TABELA_EGZOTYKOW}'.")
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")
