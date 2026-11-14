@@ -58,3 +58,9 @@ def test_pomija_grupy_z_za_mala_proba_po_agregacji():
 def test_brak_pojemnosci_tworzy_wlasna_grupe():
     gold = _gold([dict(Pojemnosc_L=None, Ilosc_Aukcje_USA=40)])
     assert len(rg.licz_ranking_generacji(gold)) == 1
+
+
+def test_niska_wiarygodnosc_wchodzi_tylko_gdy_o_to_poproszono():
+    gold = _gold([dict(Wiarygodnosc='niska')])
+    assert rg.licz_ranking_generacji(gold).empty
+    assert len(rg.licz_ranking_generacji(gold, z_niska_wiarygodnoscia=True)) == 1

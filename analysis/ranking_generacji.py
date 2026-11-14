@@ -5,7 +5,7 @@ MIN_OGLOSZEN_RANKING = 5
 
 KLUCZ_RANKINGU = ['Marka', 'Model', 'Generacja', 'Pojemnosc_L']
 KOLUMNY_RANKINGU = [*KLUCZ_RANKINGU, 'Rocznik_Od', 'Rocznik_Do', 'Ilosc_Rocznikow', 'Ilosc_Aukcje_USA', 'Ilosc_USA_Kanada_Otomoto',
-                    'Mediana_Cena_USA_Kanada_Otomoto_PLN', 'Ilosc_Krajowe', 'Mediana_Cena_Krajowe_PLN', 'Mediana_Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%']
+                    'Mediana_Cena_USA_Kanada_Otomoto_PLN', 'Ilosc_Krajowe', 'Mediana_Cena_Krajowe_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Mediana_Koszt_Import_PLN']
 
 
 def _mediana_wazona(wartosci, wagi):
@@ -15,12 +15,13 @@ def _mediana_wazona(wartosci, wagi):
     return wartosci[kolejnosc][skumulowane >= 0.5].iloc[0]
 
 
-def licz_ranking_generacji(gold, min_aukcji=MIN_AUKCJI_RANKING, min_ogloszen=MIN_OGLOSZEN_RANKING):
+def licz_ranking_generacji(gold, min_aukcji=MIN_AUKCJI_RANKING, min_ogloszen=MIN_OGLOSZEN_RANKING, z_niska_wiarygodnoscia=False):
     """Ranking generacji z silnikiem (pojemnością): grupy marka+model+generacja+pojemność ze wszystkich roczników naraz, posortowane
     po budżecie na naprawę w %. Cena to mediana ważona liczbą ogłoszeń Otomoto, cena krajowa liczbą ogłoszeń krajowych, koszt importu liczbą aukcji USA, a budżet na naprawę z nich wynika.
-    Pomijamy grupy o niskiej wiarygodności, z niepewną wersją lub podejrzanym rocznikiem oraz bez generacji, a po agregacji te,
+    Pomijamy grupy o niskiej wiarygodności (chyba że z_niska_wiarygodnoscia, np. dla rankingu z egzotykami), z niepewną wersją lub podejrzanym rocznikiem oraz bez generacji, a po agregacji te,
     które mają łącznie mniej niż min_aukcji aukcji USA lub min_ogloszen ogłoszeń Otomoto."""
-    ok = gold[(gold['Wiarygodnosc'] != 'niska') & (gold['Niepewna_Wersja'] == 0) & (gold['Podejrzany_Rocznik'] == 0)
+    wiarygodne = True if z_niska_wiarygodnoscia else (gold['Wiarygodnosc'] != 'niska')
+    ok = gold[wiarygodne & (gold['Niepewna_Wersja'] == 0) & (gold['Podejrzany_Rocznik'] == 0)
               & (gold['Generacja'] != 'brak')]
     wiersze = []
     for klucz, g in ok.groupby(KLUCZ_RANKINGU, dropna=False):

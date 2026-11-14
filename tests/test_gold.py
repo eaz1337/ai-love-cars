@@ -131,9 +131,10 @@ class TestOdfiltrujCenyTechniczne:
 class TestOdfiltrujUszkodzeniaWykluczone:
     def test_drops_burn_flood_water_biohazard_variants(self):
         damage = ["Burn", "Engine Burn", "Total Burn", "Flood", "Water/Flood", "Fresh Water",
-                  "Salt Water", "Biohazard/Chemical", "Front End", "Normal Wear and Tear", None]
+                  "Salt Water", "Biohazard/Chemical", "Rollover", "Missing/Altered Vin", "Replaced Vin",
+                  "Rejected Repair", "Frame Damage", "Frame", "Stripped", "Partial Repair", "Front End", "Normal Wear and Tear", None]
         df = pd.DataFrame({"Damage": damage})
-        assert list(gold.odfiltruj_uszkodzenia_wykluczone(df)["Damage"].fillna("")) == ["Front End", "Normal Wear and Tear", ""]
+        assert list(gold.odfiltruj_uszkodzenia_wykluczone(df)["Damage"].fillna("")) == ["Stripped", "Partial Repair", "Front End", "Normal Wear and Tear", ""]
 
 
 class TestFiltrujSprzedawce:

@@ -31,6 +31,7 @@ POJEMNOSC_ELEKTRYCZNE_L = 0.0
 
 TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
 TABELA_RANKINGU = 'ranking_generacji_usa'
+TABELA_RANKINGU_Z_EGZOTYKAMI = 'ranking_generacji_z_egzotykami_usa'
 # Egzotyki: grupy z mniejszą próbką niż progi poniżej (ale z co najmniej 1 aukcją i 1 ogłoszeniem), trzymane osobno, żeby nie
 # mieszały się z rankingiem i nie trafiały do snapshotów i rankingu generacji. Mediana z 1-2 sztuk to orientacja, nie wycena
 TABELA_EGZOTYKOW = 'egzotyki_usa'
@@ -139,10 +140,11 @@ def odfiltruj_ceny_techniczne(bidfax, min_cena=MIN_CENA_AUKCJI_USD):
     żeby ostatnia aukcja z placeholderem nie wygrała z wcześniejszą, która ma prawdziwą cenę."""
     return bidfax[pd.to_numeric(bidfax['Cena_USD'], errors='coerce') >= min_cena]
 
-USZKODZENIA_WYKLUCZONE = ('burn', 'biohazard', 'flood', 'water')
+USZKODZENIA_WYKLUCZONE = ('burn', 'biohazard', 'flood', 'water', 'rollover', 'altered vin', 'replaced vin', 'rejected repair', 'frame')
 
 def odfiltruj_uszkodzenia_wykluczone(bidfax):
-    """Usuwa aukcje aut spalonych, zalanych i skażonych (Burn, Engine Burn, Flood, Water/Flood, Biohazard...).
+    """Usuwa aukcje aut spalonych, zalanych, skażonych, po dachowaniu (Rollover), z podmienionym VIN-em
+    (Missing/Altered Vin, Replaced Vin) i z odrzuconą naprawą (Rejected Repair) oraz z uszkodzoną ramą (Frame).
     Dopasowanie po fragmencie, bo Bidfax zapisuje to pod wieloma nazwami."""
     wzorzec = '|'.join(USZKODZENIA_WYKLUCZONE)
     return bidfax[~bidfax['Damage'].fillna('').str.contains(wzorzec, case=False, regex=True)]
@@ -298,7 +300,7 @@ if __name__ == '__main__':
     # Po wyborze ostatniej sprzedaży, żeby auto spalone/zalane na późniejszej aukcji nie wróciło jako wcześniejsza "czysta" sprzedaż
     przed = len(bidfax_df)
     bidfax_df = odfiltruj_uszkodzenia_wykluczone(bidfax_df).copy()
-    print(f"ℹ️  Pominięto {przed - len(bidfax_df)} aukcji aut spalonych, zalanych lub skażonych (burn/flood/water/biohazard).")
+    print(f"ℹ️  Pominięto {przed - len(bidfax_df)} aukcji z wykluczonymi uszkodzeniami ({'/'.join(USZKODZENIA_WYKLUCZONE)}).")
 
     otomoto_df['Marka'] = otomoto_df['Marka'].map(normalizuj_marke)
     otomoto_df['Model'] = otomoto_df['Model'].astype(str).str.lower().str.strip()
@@ -464,10 +466,10 @@ if __name__ == '__main__':
     assert (gold_layer['Mediana_Koszt_Import_PLN'] > 0).all(), "Ujemny lub zerowy koszt sprowadzenia"
 
     base_cols = [
-        'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
+        'Marka', 'Model', 'Generacja', 'Wersja', 'Nadwozie', 'Rocznik', 'Pojemnosc_L', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Procent_Hybryd', 'Ilosc_Aukcje_USA', 
         'Ilosc_USA_Kanada_Otomoto', 'Mediana_Cena_USA_Kanada_Otomoto_PLN', *KOLUMNY_PLYNNOSCI,
         'Mediana_Cena_Zakupu_USA_USD', *KOLUMNY_TRENDU, 'Mediana_Clo_PLN', 'Mediana_Akcyza_PLN', 'Mediana_VAT_PLN', 
-        'Mediana_Koszt_Import_PLN', 'Budzet_Na_Naprawe_PLN', 'Budzet_Na_Naprawe_%', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Rocznik_Graniczny', 'Podejrzany_Rocznik', 'Wiarygodnosc'
+        'Mediana_Koszt_Import_PLN', 'Rozrzut_Cen_Otomoto_%', 'Niepewna_Wersja', 'Rocznik_Graniczny', 'Podejrzany_Rocznik', 'Wiarygodnosc'
     ]
     if 'Ilosc_Krajowe' in gold_layer.columns and 'Mediana_Cena_Krajowe_PLN' in gold_layer.columns:
         base_cols.insert(7, 'Ilosc_Krajowe')
@@ -499,6 +501,9 @@ if __name__ == '__main__':
         ranking = licz_ranking_generacji(gold_layer)
         ranking.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
         ranking.to_sql(TABELA_RANKINGU, conn, if_exists='replace', index=False)
+        ranking_egz = licz_ranking_generacji(pd.concat([gold_layer, egzotyki], ignore_index=True), z_niska_wiarygodnoscia=True)
+        ranking_egz.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
+        ranking_egz.to_sql(TABELA_RANKINGU_Z_EGZOTYKAMI, conn, if_exists='replace', index=False)
     print(f"ℹ️  Snapshot: dopisano {zapisano} grup do '{TABELA_HISTORII}' ({date.today().isoformat()}).")
     print(f"ℹ️  Trend ceny USA policzony dla {int(gold_layer['Trend_Ceny_USA_%'].notna().sum())} z {len(gold_layer)} grup "
           f"(okno {OKNO_DNI} dni, min. {MIN_AUKCJI_W_OKNIE} aukcje w każdym oknie).")
@@ -511,5 +516,6 @@ if __name__ == '__main__':
     print(f"ℹ️  Niepewna wersja (podstawowa, rozrzut cen Otomoto > {MAX_ROZRZUT_CEN_OTOMOTO:.0%}): {int(gold_layer['Niepewna_Wersja'].sum())} grup, na końcu rankingu.")
     print("ℹ️  Wiarygodność: " + ", ".join(f"{e} {int((gold_layer['Wiarygodnosc'] == e).sum())}" for e in WIARYGODNOSC_KOLEJNOSC) + ".")
     print(f"ℹ️  Ranking generacji z silnikiem: {len(ranking)} pozycji w tabeli '{TABELA_RANKINGU}'.")
+    print(f"ℹ️  Ranking generacji z egzotykami: {len(ranking_egz)} pozycji w tabeli '{TABELA_RANKINGU_Z_EGZOTYKAMI}'.")
     print(f"ℹ️  Egzotyki (poniżej {MIN_AUKCJI_USA} aukcji lub {MIN_OGLOSZEN_OTOMOTO} ogłoszeń): {len(egzotyki)} grup w tabeli '{TABELA_EGZOTYKOW}'.")
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")
