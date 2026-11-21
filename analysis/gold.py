@@ -6,7 +6,7 @@ import os
 from datetime import date, datetime
 
 from generacje import dodaj_generacje, dodaj_granice, wczytaj_generacje
-from ranking_generacji import licz_ranking_generacji
+from ranking_generacji import licz_ranking_generacji, licz_ranking_egzotykow
 from plynnosc import KOLUMNY_PLYNNOSCI, licz_plynnosc
 from trendy import KOLUMNY_TRENDU, MIN_AUKCJI_W_OKNIE, OKNO_DNI, licz_trendy, zapisz_snapshot
 from koszty import transport_ladowy_usd, wczytaj_koszty
@@ -31,7 +31,7 @@ POJEMNOSC_ELEKTRYCZNE_L = 0.0
 
 TABELA_HISTORII = 'analiza_rentownosci_usa_historia'
 TABELA_RANKINGU = 'ranking_generacji_usa'
-TABELA_RANKINGU_Z_EGZOTYKAMI = 'ranking_generacji_z_egzotykami_usa'
+TABELA_RANKINGU_EGZOTYKOW = 'ranking_generacji_egzotyki_usa'
 # Egzotyki: grupy z mniejszą próbką niż progi poniżej (ale z co najmniej 1 aukcją i 1 ogłoszeniem), trzymane osobno, żeby nie
 # mieszały się z rankingiem i nie trafiały do snapshotów i rankingu generacji. Mediana z 1-2 sztuk to orientacja, nie wycena
 TABELA_EGZOTYKOW = 'egzotyki_usa'
@@ -501,9 +501,10 @@ if __name__ == '__main__':
         ranking = licz_ranking_generacji(gold_layer)
         ranking.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
         ranking.to_sql(TABELA_RANKINGU, conn, if_exists='replace', index=False)
-        ranking_egz = licz_ranking_generacji(pd.concat([gold_layer, egzotyki], ignore_index=True), z_niska_wiarygodnoscia=True)
+        ranking_egz = licz_ranking_egzotykow(gold_layer, egzotyki)
         ranking_egz.insert(0, 'Data_Przeladowania', gold_do_zapisu['Data_Przeladowania'].iloc[0])
-        ranking_egz.to_sql(TABELA_RANKINGU_Z_EGZOTYKAMI, conn, if_exists='replace', index=False)
+        conn.execute('DROP TABLE IF EXISTS ranking_generacji_z_egzotykami_usa')
+        ranking_egz.to_sql(TABELA_RANKINGU_EGZOTYKOW, conn, if_exists='replace', index=False)
     print(f"ℹ️  Snapshot: dopisano {zapisano} grup do '{TABELA_HISTORII}' ({date.today().isoformat()}).")
     print(f"ℹ️  Trend ceny USA policzony dla {int(gold_layer['Trend_Ceny_USA_%'].notna().sum())} z {len(gold_layer)} grup "
           f"(okno {OKNO_DNI} dni, min. {MIN_AUKCJI_W_OKNIE} aukcje w każdym oknie).")
@@ -516,6 +517,6 @@ if __name__ == '__main__':
     print(f"ℹ️  Niepewna wersja (podstawowa, rozrzut cen Otomoto > {MAX_ROZRZUT_CEN_OTOMOTO:.0%}): {int(gold_layer['Niepewna_Wersja'].sum())} grup, na końcu rankingu.")
     print("ℹ️  Wiarygodność: " + ", ".join(f"{e} {int((gold_layer['Wiarygodnosc'] == e).sum())}" for e in WIARYGODNOSC_KOLEJNOSC) + ".")
     print(f"ℹ️  Ranking generacji z silnikiem: {len(ranking)} pozycji w tabeli '{TABELA_RANKINGU}'.")
-    print(f"ℹ️  Ranking generacji z egzotykami: {len(ranking_egz)} pozycji w tabeli '{TABELA_RANKINGU_Z_EGZOTYKAMI}'.")
+    print(f"ℹ️  Ranking generacji egzotyków (rozłączny ze zwykłym): {len(ranking_egz)} pozycji w tabeli '{TABELA_RANKINGU_EGZOTYKOW}'.")
     print(f"ℹ️  Egzotyki (poniżej {MIN_AUKCJI_USA} aukcji lub {MIN_OGLOSZEN_OTOMOTO} ogłoszeń): {len(egzotyki)} grup w tabeli '{TABELA_EGZOTYKOW}'.")
     print(f"✅ Zapisano {len(gold_layer)} grup do tabeli '{table_name}' (budżet na naprawę ujemny: {ujemne}).")

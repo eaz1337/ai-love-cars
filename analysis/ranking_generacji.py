@@ -45,3 +45,12 @@ def licz_ranking_generacji(gold, min_aukcji=MIN_AUKCJI_RANKING, min_ogloszen=MIN
     ranking = pd.DataFrame(wiersze)
     ranking = ranking[(ranking['Ilosc_Aukcje_USA'] >= min_aukcji) & (ranking['Ilosc_USA_Kanada_Otomoto'] >= min_ogloszen)]
     return ranking.sort_values('Budzet_Na_Naprawe_%', ascending=False)[KOLUMNY_RANKINGU].round(1).reset_index(drop=True)
+
+
+def licz_ranking_egzotykow(gold, egzotyki, min_aukcji=MIN_AUKCJI_RANKING, min_ogloszen=MIN_OGLOSZEN_RANKING):
+    """Ranking generacji, które nie mieszczą się w zwykłym rankingu i da się je policzyć dopiero z egzotykami (grupy poniżej progów
+    aukcji/ogłoszeń). Rozłączny ze zwykłym rankingiem: pozycje z licz_ranking_generacji(gold) są tu pominięte."""
+    zwykly = licz_ranking_generacji(gold, min_aukcji, min_ogloszen)
+    razem = licz_ranking_generacji(pd.concat([gold, egzotyki], ignore_index=True), min_aukcji, min_ogloszen, z_niska_wiarygodnoscia=True)
+    zajete = set(map(tuple, zwykly[KLUCZ_RANKINGU].to_numpy()))
+    return razem[[tuple(k) not in zajete for k in razem[KLUCZ_RANKINGU].to_numpy()]].reset_index(drop=True)

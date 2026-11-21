@@ -60,6 +60,13 @@ def test_brak_pojemnosci_tworzy_wlasna_grupe():
     assert len(rg.licz_ranking_generacji(gold)) == 1
 
 
+def test_ranking_egzotykow_jest_rozlaczny_ze_zwyklym():
+    gold = _gold([dict()])
+    egz = _gold([dict(Wiarygodnosc='niska', Ilosc_Aukcje_USA=2, Ilosc_USA_Kanada_Otomoto=1),
+                 dict(Model='m3', Wiarygodnosc='niska', Ilosc_Aukcje_USA=12, Ilosc_USA_Kanada_Otomoto=6)])
+    assert list(rg.licz_ranking_egzotykow(gold, egz)['Model']) == ['m3']
+
+
 def test_niska_wiarygodnosc_wchodzi_tylko_gdy_o_to_poproszono():
     gold = _gold([dict(Wiarygodnosc='niska')])
     assert rg.licz_ranking_generacji(gold).empty
