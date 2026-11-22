@@ -99,3 +99,25 @@ class TestBaza:
         links = [r[0] for r in conn.execute("SELECT Link FROM bidfax_scd2")]
         assert links == ["brak"]
 
+
+
+def test_stan_skanu_wznawia_od_zapisanej_marki_i_strony(tmp_path, monkeypatch):
+    import sqlite3
+    from scrapers import scraper_bidfax as sb
+    monkeypatch.setattr(sb, "DB_NAME", str(tmp_path / "t.db"))
+    conn = sb.zainicjalizuj_baze()
+    marki = ["audi", "bmw", "ford"]
+    assert sb.wczytaj_stan(conn, marki) == (0, 1)
+    sb.zapisz_stan(conn, "bmw", 7)
+    assert sb.wczytaj_stan(conn, marki) == (1, 7)
+    sb.wyczysc_stan(conn)
+    assert sb.wczytaj_stan(conn, marki) == (0, 1)
+
+
+def test_stary_stan_skanu_jest_ignorowany(tmp_path, monkeypatch):
+    from scrapers import scraper_bidfax as sb
+    monkeypatch.setattr(sb, "DB_NAME", str(tmp_path / "t.db"))
+    conn = sb.zainicjalizuj_baze()
+    conn.execute("INSERT INTO stan_skanu_bidfax VALUES (1, 'bmw', 7, '2000-01-01 00:00:00')")
+    conn.commit()
+    assert sb.wczytaj_stan(conn, ["audi", "bmw"]) == (0, 1)

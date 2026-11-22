@@ -38,6 +38,8 @@ SELEKTOR_OFERTY = 'css:.thumbnail.offer'
 PAUZA_BLOKADA_S = 120
 MAX_BLOKAD_POD_RZAD = 3
 PAUZA_MIEDZY_MARKAMI_S = (5.0, 12.0)
+STRON_ZAPASU_PO_WZNOWIENIU = 15  # po wznowieniu tyle stron nie działa reguła "3 strony bez nowych" (numeracja przesuwa się o nowe aukcje)
+STAN_WAZNY_H = 24  # tyle godzin po przerwaniu skrypt jeszcze wznawia od zapamiętanego miejsca (potem zaczyna od nowa)
 
 # ==============================================================================
 # BAZA DANYCH SQLITE
@@ -61,10 +63,38 @@ def zainicjalizuj_baze():
             pass
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_date_of_sale ON bidfax_scd2 (Date_Of_Sale)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stan_skanu_bidfax (
+            ID INTEGER PRIMARY KEY CHECK (ID = 1), Marka TEXT, Nastepna_Strona INTEGER, Zapisano TEXT
+        )
+    """)
     cursor.execute("PRAGMA journal_mode = WAL;")
     cursor.execute("PRAGMA synchronous = NORMAL;")
     conn.commit()
     return conn
+
+def zapisz_stan(conn, marka, strona):
+    """Punkt wznowienia: po przerwaniu (restart komputera, Ctrl+C, blokada) skrypt zaczyna od tej marki i strony."""
+    conn.execute("INSERT OR REPLACE INTO stan_skanu_bidfax (ID, Marka, Nastepna_Strona, Zapisano) VALUES (1, ?, ?, ?)",
+                 (marka, strona, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+
+def wczytaj_stan(conn, marki):
+    """(indeks_marki, strona) do wznowienia albo (0, 1), gdy brak świeżego stanu."""
+    wiersz = conn.execute("SELECT Marka, Nastepna_Strona, Zapisano FROM stan_skanu_bidfax WHERE ID = 1").fetchone()
+    if not wiersz or wiersz[0] not in marki:
+        return 0, 1
+    try:
+        wiek = datetime.now() - datetime.strptime(wiersz[2], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return 0, 1
+    if wiek > timedelta(hours=STAN_WAZNY_H):
+        return 0, 1
+    return marki.index(wiersz[0]), max(1, int(wiersz[1] or 1))
+
+def wyczysc_stan(conn):
+    conn.execute("DELETE FROM stan_skanu_bidfax")
+    conn.commit()
 
 def wstaw_ogloszenia_hurtowo(conn, auta):
     cursor = conn.cursor()
@@ -251,15 +281,23 @@ def main():
     time.sleep(3)
 
     przerwij = False
+    start_marka, start_strona = wczytaj_stan(conn, MARKI_DO_POBRANIA)
+    if (start_marka, start_strona) != (0, 1):
+        logging.info(f"♻️ Wznawiam przerwany skan: marka {MARKI_DO_POBRANIA[start_marka].upper()}, strona {start_strona}.")
     try:
-        for marka in MARKI_DO_POBRANIA:
+        for indeks_marki, marka in enumerate(MARKI_DO_POBRANIA):
+            if indeks_marki < start_marka:
+                continue
             if przerwij:
                 break
             logging.info(f"\n{'='*50}\nSKANOWANIE MARKI: {marka.upper()}\n{'='*50}")
-            aktualna_strona = 1
+            aktualna_strona = start_strona if indeks_marki == start_marka else 1
             puste_strony_pod_rzad = 0
             blokady_pod_rzad = 0
-            wymus_url = False
+            wymus_url = aktualna_strona > 1  # po wznowieniu nie ma jak kliknąć w paginację, wchodzimy na URL
+            # Nowe aukcje przesuwają numerację: po wznowieniu pierwsze strony mogą być już znane,
+            # choć dalsze nie były pobrane. Reguły stopu nie stosujemy, dopóki nie minie zapas stron.
+            stop_dozwolony_od = aktualna_strona + STRON_ZAPASU_PO_WZNOWIENIU if aktualna_strona > 1 else 1
 
             while aktualna_strona <= MAX_PAGES:
                 url = f"{DOMAIN}{marka}/" if aktualna_strona == 1 else f"{DOMAIN}{marka}/page/{aktualna_strona}/"
@@ -344,7 +382,7 @@ def main():
 
                 logging.info(f"[{marka.upper()}-S{aktualna_strona}] Zapisano: {faktycznie_zapisane} (nowe: {nowe}) | (Czas: {czas_wyk:.1f}s)")
 
-                if auta_do_bazy and nowe == 0:
+                if auta_do_bazy and nowe == 0 and aktualna_strona >= stop_dozwolony_od:
                     puste_strony_pod_rzad += 1
                     if puste_strony_pod_rzad >= 3:
                         logging.info(f"🛑 Baza aktualna (3 strony bez nowych aut). Przechodzę do następnej marki.")
@@ -357,11 +395,19 @@ def main():
                     break
 
                 aktualna_strona += 1
+                zapisz_stan(conn, marka, aktualna_strona)
+
+            # Marka skończona: wznowienie ma zacząć od następnej (a nie od ostatniej strony tej)
+            if not przerwij and indeks_marki + 1 < len(MARKI_DO_POBRANIA):
+                zapisz_stan(conn, MARKI_DO_POBRANIA[indeks_marki + 1], 1)
 
             # Czyszczenie po każdej marce, żeby przerwanie skryptu nie zostawiało starych rekordów
             usun_stare_rekordy(conn)
             if not przerwij:
                 time.sleep(random.uniform(*PAUZA_MIEDZY_MARKAMI_S))
+
+        if not przerwij:
+            wyczysc_stan(conn)  # pełny przebieg ukończony: następne uruchomienie zaczyna od początku
 
     except KeyboardInterrupt:
         logging.info("Przerwano działanie skryptu skrótem z klawiatury (Ctrl+C).")
